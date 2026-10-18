@@ -935,3 +935,251 @@ fi
 
 Dari gambar tersebut terlihat pada baris udhcpc tertulis lease of 10.79.3.99 obtained from 10.79.4.10, dan ip -4 a show eth0 menampilkan inet 10.79.3.99/24. Gateway 10.79.3.1 dan DNS 10.79.1.2 serta 10.79.1.3 juga diterima, dan ping ke gateway berhasil.
 
+
+**11. utahime dan shoko ditugaskan membangun sistem penamaan domain resmi agar seluruh pos tidak perlu menghafal alamat IP mentah. Konfigurasikan BIND9 pada utahime sebagai DNS Master dan shoko sebagai DNS Slave untuk mengelola domain jujutsu.< xxxx>.com. Atur SOA record, NS delegasi untuk kedua server, dan terapkan allow-transfer dari Master ke Slave. Pastikan file zona berhasil tersinkronisasi otomatis ke shoko saat nomor serial di utahime dinaikkan, lalu buktikan dengan melakukan query dig ke kedua server dari salah satu client.**
+
+Setup pada utahime sebagai DNS Master, seperti berikut: <br>
+Pada /etc/bind/named.conf.local, tambahkan
+
+```sh
+zone "jujutsu.K31.com" {
+        type master;
+        file "/etc/bind/db.jujutsu.K31.com";
+        allow-transfer { 10.79.1.3; };
+        also-notify { 10.79.1.3; };
+};
+```
+Pada /etc/bind/db.jujutsu.K31.com, tambahkan
+
+```sh
+$TTL    86400
+@       IN      SOA     utahime.jujutsu.K31.com. admin.jujutsu.K31.com. (
+                2026101401
+                3600
+                1800
+                604800
+                86400
+)
+
+@       IN      NS      utahime.jujutsu.K31.com.
+@       IN      NS      shoko.jujutsu.K31.com.
+
+utahime IN      A       10.79.1.2
+shoko   IN      A       10.79.1.3
+@       IN      A       10.79.1.2
+
+```
+
+Cek dan reload
+
+```sh
+named-checkconf
+named-checkzone jujutsu.K31.com /etc/bind/db.jujutsu.K31.com
+
+service named restart
+service named status
+```
+Setup pada shoko sebagai DNS Slave dan utahime sebagai masternya: <br>
+Pada /etc/bind/named.conf.local, tambahkan
+
+```sh
+zone "jujutsu.K31.com" {
+        type slave;
+        masters { 10.79.1.2; }
+        file "/var/cache/bind/db.jujutsu.K31.com";
+}
+```
+Cek dan reload
+
+```sh
+named-checkconf
+
+service named restart
+service named status
+```
+
+Buktikan menggunakan query dig:
+- dig @10.79.1.2 jujutsu.K31.com SOA
+- dig @10.79.1.2 jujutsu.K31.com NS
+- dig @10.79.1.3 jujutsu.K31.com SOA
+- dig @10.79.1.3 jujutsu.K31.com NS
+- dig @10.79.1.3 jujutsu.K31.com 
+
+
+<br> 
+
+**12. Peta domain harus memetakan pintu masuk utama dan tetap bisa mencari alamat di luar kawasan Shibuya. Pada utahime, buat A record jujutsu.< xxxx>.com yang mengarah ke gojo, serta CNAME www yang merujuk ke domain utama tersebut. Buat pula Reverse DNS (zona PTR) untuk melacak IP gojo kembali ke domain resminya, dan aktifkan fitur DNS Forwarder pada BIND9 mengarah ke IP gateway internet (192.168 122.1). Uji dari client dengan dig untuk mengecek CNAME, PTR, dan buktikan client tetap bisa melakukan ping ke domain internet seperti google.com.**
+
+Setup CNAME dengan mengubah dan menambahkan berikut pada /etc/bind/db.jujutsu.K31.com milik DNS Master (utahime):
+
+```sh
+$TTL    86400
+@       IN      SOA     utahime.jujutsu.K31.com. admin.jujutsu.K31.com. (
+                2026101403
+                3600
+                1800
+                604800
+                86400
+)
+
+@       IN      NS      utahime.jujutsu.K31.com.
+@       IN      NS      shoko.jujutsu.K31.com.
+
+utahime IN      A       10.79.1.2
+shoko   IN      A       10.79.1.3
+@       IN      A       10.79.1.4    // ubah
+
+www     IN      CNAME   jujutsu.K31.com.  //tambahkan
+```
+Cek dan reload
+
+```sh
+named-checkconf
+named-checkzone jujutsu.K31.com /etc/bind/db.jujutsu.K31.com
+rndc reload jujutsu.K31.com
+```
+
+Setup Reverse DNS (zona PTR) untuk melacak IP gojo kembali ke domain resminya:
+<br>
+Pada /etc/bind/named.conf.local, tambahkan
+
+```sh
+zone "1.79.10.in-addr.arpa" {
+        type master;
+        file "/etc/bind/db.10.79.1";
+        allow-transfer { 10.79.1.3; };
+        also-notify { 10.79.1.3; };
+};
+```
+
+dan pada /etc/bind/db.10.79.1, tambahkan
+
+```sh
+$TTL    86400
+@       IN      SOA     utahime.jujutsu.K31.com. admin.jujutsu.K31.com. (
+        2026101401
+        3600
+        1800
+        604800
+        86400
+)
+
+@       IN      NS      utahime.jujutsu.K31.com.
+@       IN      NS      shoko.jujutsu.K31.com.
+4       IN      PTR     jujutsu.K31.com.
+```
+
+Cek dan reload
+
+```sh
+named-checkconf && named-checkzone jujutsu.K31.com /etc/bind/db.jujutsu.K31.com &&  named-checkzone 1.79.10.in-addr.arpa /etc/bind/db.10.79.1
+rndc reload
+```
+
+Aktifkan fitur DNS Forwarder pada BIND9 mengarah ke IP gateway internet (192.168 122.1), dengan menamabahkan pada options lalu cek dan reload
+
+```sh
+nano /etc/bind/named.conf.options
+
+        forwarders {
+                192.168.122.1;
+        };
+
+named-checkconf
+rndc reload
+```
+
+Uji dari client menggunakan dig untuk mengecek CNAME, PTR, dan ping ke google.com
+
+- dig @10.79.1.2 www.jujutsu.K31.com CNAME
+- dig @10.79.1.2 -x 10.79.1.4
+- dig @10.79.1.2 google.com A
+
+<br>
+
+**13. Kepala Sekolah Yaga dan Inumaki mendirikan database terpusat yang redundan agar log aktivitas kutukan tetap aman tersimpan. Konfigurasikan MariaDB pada yaga sebagai DB-Master dan inumaki sebagai DB-Slave. Buat database db_shibuya _< xxxx> beserta tabel request_logs di Master, aktifkan binary logging (log-bin, server-id), lalu hubungkan inumaki sebagai Slave yang menyalin data secara realtime dengan CHANGE MASTER TO. Berikan hak akses remote bagi seluruh node di Network 4, lalu buktikan replikasi berhasil dengan memasukkan data baru di Master dan memeriksa hasilnya di Slave.**
+
+```sh
+apt-get update
+apt-get install -y mariadb-server mariadb-client
+```
+
+Setup DB Master pada yaga dengan menambahkan ini pada /etc/mysql/mariadb.conf.d/60-replication.cnf lalu reload
+
+```sh
+[mysqld]
+server-id = 4
+log_bin = /var/log/mysql/mariadb-bin
+binlog_format = ROW
+bind-address = 0.0.0.0
+
+service mariadb restart
+```
+
+Cek, debug, dan reload
+
+```sh
+mkdir -p /var/log/mysql
+chown mysql:mysql /var/log/mysql
+chmod 750 /var/log/mysql
+service mariadb restart
+mariadb -e "SHOW VARIABLES LIKE 'server_id';"
+mariadb -e "SHOW VARIABLES LIKE 'log_bin';"
+mariadb -e "SHOW MASTER STATUS\G"
+```
+
+Setup DB Slave pada inumaki dengan menambahkan ini pada /etc/mysql/mariadb.conf.d/60-replication.cnf lalu reload
+
+```sh
+[mysqld]
+server-id = 5
+relay_log = /var/log/mysql/mariadb-relay-bin
+bind-address = 0.0.0.0
+```
+
+Cek, debug dan reload
+
+```sh
+mkdir -p /var/log/mysql
+chown mysql:mysql /var/log/mysql
+chmod 750 /var/log/mysql
+service mariadb restart
+mariadb -e "SHOW VARIABLES LIKE 'server_id';"
+mariadb -e "SHOW VARIABLES LIKE 'relay_log';"
+```
+
+Membuat database "db_shibuya_K31" pada DB Master (yaga)
+
+```sql
+CREATE DATABASE IF NOT EXISTS db_shibuya_K31;
+
+USE db_shibuya_K31;
+
+CREATE TABLE IF NOT EXISTS request_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        request_method VARCHAR(10) NOT NULL,
+        request_path VARCHAR(255) NOT NULL,
+        status_code INT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Cek tabel pada database "db_shibuya_K31"
+
+```sh
+mariadb -e "SHOW TABLES FROM db_shibuya_K31;"
+```
+
+**14. Para penyihir lapangan bersiaga di Data Center sebagai pekerja backend untuk memproses aplikasi. Pasang Nginx dan PHP-FPM pada maki dan panda untuk menyajikan web frontend yang menampilkan hostname masing-masing. Pada nanami, todo, dan kirara, siapkan layanan API yang mencatat log request ke database yaga. Konfigurasikan virtual host agar worker merespons domain layanan yang ditentukan. Batasi akses langsung dari klien ke worker, web worker hanya menerima trafik melalui jalur proxy web yang ditentukan, sedangkan worker API hanya menerima trafik melalui geto. Uji bahwa akses langsung dari klien ditolak, sementara akses melalui reverse proxy tetap berhasil.**
+
+**15. Geto bertugas mengendalikan pembagian beban request API di internal Data Center agar server tidak tumbang bersamaan. Konfigurasikan Nginx pada geto sebagai Load Balancer internal dengan upstream api_cluster yang mengarahkan trafik ke nanami dan todo. Terapkan algoritma Weighted Round Robin dengan bobot 3:1, di mana nanami menerima porsi beban tiga kali lebih banyak daripada todo. Buktikan distribusi beban ini dengan melakukan loop request berulang kali ke geto dari jaringan lokal Data Center dan periksa rasio responnya.**
+
+**16. Gojo berdiri di perbatasan DMZ sebagai gerbang publik tunggal bagi seluruh client dari luar maupun dalam. Konfigurasikan Nginx pada gojo untuk melayani domain jujutsu. < xxxx>.com dan www.jujutsu .< xxxx>.com menggunakan metode Path-Based Routing. Atur agar request root (/) diteruskan secara Round Robin ke worker frontend (maki dan panda), sedangkan request ke path /api diteruskan langsung ke geto. Uji dari client Divisi A atau B bahwa akses ke web utama dibalas oleh Maki/Panda, sedangkan akses ke  api diteruskan dan dijawab oleh Nanami/Todo.**
+
+**17. Komando pusat perlu mengetahui IP asli klien yang mengirimkan request tanpa tertukar dengan IP proxy perantara. Konfigurasikan gojo dan geto agar meneruskan informasi alamat klien melalui header X-Real-IP dan X-Forwarded-For. Pastikan geto hanya mempercayai informasi alamat klien yang diterima dari proxy terpercaya, dan skrip API menyimpan alamat klien yang telah diverifikasi ke kolom client_ip pada tabel request_logs di database yaga. Uji dengan mengirimkan request dari klien Network 2 dan Network 3 ke endpoint /api, kemudian periksa database untuk memastikan alamat yang tercatat sesuai dengan IP klien asal, bukan IP gojo atau geto.**
+
+**18. nanami dan todo merupakan worker API utama, sedangkan kirara disiapkan sebagai  worker cadangan. Konfigurasikan upstream api_cluster pada geto agar kirara menjadi server backup, serta terapkan passive health check dengan parameter max_fails=2 dan fail_timeout=5s pada worker API utama. Pastikan kirara menjalankan layanan API yang kompatibel dengan endpoint utama. Simulasikan gangguan dengan menghentikan layanan Nginx atau layanan API pada nanami dan todo. Buktikan dari klien bahwa request ke /api dialihkan ke kirara dan menghasilkan respons API yang valid tanpa error 502 Bad Gateway.**
+
+**19. gojo bertugas mengoptimalkan layanan web sekaligus membatasi request berlebihan. Konfigurasikan Nginx Proxy Caching untuk halaman web frontend dengan masa berlaku cache 10 menit dan tambahkan header X-Cache-Status. Terapkan rate limiting pada path /api dengan batas 10 request per detik per IP klien. Buktikan bahwa request ke halaman web yang memenuhi syarat cache menghasilkan status MISS pada akses awal dan HIT pada akses berikutnya. Uji rate limiting secara terpisah dengan mengirimkan request beruntun ke /api, kemudian catat status respons yang dihasilkan ketika batas terlampaui.**
+
+**20. Sebelum Curtain di Shibuya resmi dibuka,  Kusakabe memimpin audit untuk menguji kapasitas layanan. Dari terminal kusakabe, jalankan benchmark menggunakan Apache Benchmark dengan parameter -n 600 -c 30 menuju http://jujutsu .< xxxx>.com/. Catat Requests per Second (RPS), latensi, dan jumlah request yang gagal. Lakukan pengujian tambahan pada endpoint /api untuk mengamati efek rate limiting. Bandingkan hasil pengujian baseline dengan hasil ketika rate limiting aktif, serta gunakan access log gojo untuk membedakan kegagalan aplikasi, koneksi, dan request yang ditolak oleh kebijakan rate limit.**
