@@ -1113,7 +1113,7 @@ Setelah tcpdump berjalan, selanjutnya melalui salah satu klien yaitu node itador
 bash soal-4-bukti.sh
 ```
 
-![alt text](<Screenshot 2026-10-15 025723.png>)
+![alt text](assets/9-req-lease.png)
 
 Dari gambar tersebut dilihat bahwa permintaan lease baru gagal karena service dhcp relay dihentikan.
 
