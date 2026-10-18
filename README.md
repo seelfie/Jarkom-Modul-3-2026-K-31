@@ -935,6 +935,303 @@ fi
 
 Dari gambar tersebut terlihat pada baris udhcpc tertulis lease of 10.79.3.99 obtained from 10.79.4.10, dan ip -4 a show eth0 menampilkan inet 10.79.3.99/24. Gateway 10.79.3.1 dan DNS 10.79.1.2 serta 10.79.1.3 juga diterima, dan ping ke gateway berhasil.
 
+**7. Setelah aturan alokasi diterapkan, pastikan setiap client menerima konfigurasi jaringan sesuai wilayahnya: subnet mask 255.255.255.0 (/24), gateway dan broadcast address yang benar, DNS [PREFIX IP].1.2 serta [PREFIX IP].1.3, dan domain-search yang ditentukan. Periksa IP address dan routing seluruh client Divisi A dan Divisi B, kemudian cocokkan lease dengan /var/lib/dhcp/dhcpd.leases pada tengen. Pastikan tidak ada alamat yang bertabrakan atau berada di luar kebijakan pool.**
+
+Pertama-tama, opsi DNS dan domain lama pada net2.conf dihapus dengan sed, supaya tidak ada opsi yang tertulis dua kali. Perintah d pada sed menghapus baris yang cocok dengan pola.
+
+```sh
+sed -i '/option domain-name-servers/d;/option domain-search/d;/option domain-name /d' /etc/dhcp/conf.d/net2.conf
+```
+
+Selanjutnya opsi yang benar ditambahkan tepat setelah baris option routers. Perintah a pada sed menambahkan teks setelah baris yang cocok. Opsi domain-name ditambahkan di samping domain-search karena klien Alpine (udhcpc) menuliskan baris search di resolv.conf dari opsi tersebut. Pool dan class pada net2.conf tidak tersentuh.
+
+```sh
+sed -i '/option routers/a\    option domain-name-servers 10.79.1.2, 10.79.1.3;\n    option domain-search "K31.com";\n    option domain-name "K31.com";' /etc/dhcp/conf.d/net2.conf
+```
+
+Kemudian sintaks diuji dengan dhcpd -t, lalu seluruh opsi jaringan pada kedua subnet ditampilkan dengan grep untuk memastikan keduanya konsisten.
+
+```sh
+dhcpd -t -cf /etc/dhcp/dhcpd.conf && echo "Sintaks OK"
+grep -nE "subnet|routers|broadcast|domain" /etc/dhcp/conf.d/net2.conf /etc/dhcp/conf.d/net3.conf
+```
+Terakhir, service dijalankan ulang agar membaca konfigurasi baru, dan statusnya diperiksa.
+
+```sh
+service isc-dhcp-server restart
+sleep 2
+service isc-dhcp-server status
+```
+
+Selanjutnya setiap klien meminta lease ulang agar menerima opsi yang baru. Pada kedelapan klien (itadori, fushiguro, zenin, okkotsu, ino, kusakabe, miwa, dan kugisaki) dijalankan script berikut.
+
+```sh
+#!/bin/sh
+echo "===== $(hostname) ====="
+echo "MAC : $(ip link show eth0 | awk '/link\/ether/ {print $2}')"
+
+ip addr flush dev eth0
+udhcpc -i eth0 -n -q
+
+echo "--- IP eth0 ---"
+ip -4 a show eth0 | grep inet
+echo "--- Route ---"
+ip route
+echo "--- DNS ---"
+cat /etc/resolv.conf
+GW=$(ip route | awk '/^default/ {print $3}')
+if [ -n "$GW" ]; then
+  echo "--- Ping gateway ($GW) ---"
+  ping -c 3 $GW
+else
+  echo "Tidak ada default route, lease gagal"
+fi
+```
+![alt text](assets/7-itadori.png)
+
+![alt text](assets/8-fushiguro.png)
+
+![alt text](assets/8-zenin.png)
+
+![alt text](assets/8-okkotsu.png)
+
+Dari gambar tersebut terlihat klien Divisi A (itadori, fushiguro, zenin, okkotsu) memperoleh alamat 10.79.2.x/24 dengan brd 10.79.2.255, default via 10.79.2.1, serta resolv.conf berisi search K31.com, nameserver 10.79.1.2, dan nameserver 10.79.1.3. Alamat itadori dan fushiguro berada di rentang .10 sampai .35, sedangkan zenin dan okkotsu di rentang .70 sampai .95.
+
+![alt text](assets/8-ino.png)
+
+![alt text](assets/8-kusakabe.png)
+
+![alt text](assets/8-miwa.png)
+
+![alt text](assets/8-kugisaki.png)
+
+Dari gambar tersebut terlihat klien Divisi B (ino, kusakabe, miwa, kugisaki) memperoleh alamat 10.79.3.x/24 dengan brd 10.79.3.255, default via 10.79.3.1, dan DNS serta domain-search yang sama. Ino dan kusakabe berada di rentang .10 sampai .89, miwa di rentang .100 sampai .199, dan kugisaki tepat 10.79.3.99.
+
+Selanjutnya hasil pada klien dicocokkan dengan catatan lease di tengen. Script berikut membaca dhcpd.leases, mengambil status terakhir tiap alamat, lalu membandingkan setiap MAC dengan rentang pool yang diizinkan. Alamat yang berada di luar kebijakan ditandai DI LUAR POOL, MAC yang tidak dikenal ditandai TIDAK DIKENAL, dan MAC yang memegang lebih dari satu alamat aktif diberi peringatan.
+
+```sh
+#!/bin/sh
+LEASES=/var/lib/dhcp/dhcpd.leases
+
+awk '
+BEGIN {
+  pol["02:42:84:8e:7f:00"]="itadori 10.79.2. 10 35"
+  pol["02:42:b3:70:a5:00"]="fushiguro 10.79.2. 10 35"
+  pol["f2:dd:ec:51:c9:cb"]="zenin 10.79.2. 70 95"
+  pol["02:42:c1:aa:65:00"]="okkotsu 10.79.2. 70 95"
+  pol["02:42:97:71:9c:00"]="ino 10.79.3. 10 89"
+  pol["02:42:b9:bd:e6:00"]="kusakabe 10.79.3. 10 89"
+  pol["02:42:eb:4b:9e:00"]="miwa 10.79.3. 100 199"
+  pol["02:42:01:49:4c:00"]="kugisaki 10.79.3. 99 99"
+}
+/^lease /      { ip=$2 }
+$1=="binding"  { st=$3; sub(";","",st) }
+$1=="hardware" { mac=$3; sub(";","",mac) }
+$1=="ends"     { ends=$3" "$4; sub(";","",ends) }
+/^}/           { state[ip]=st; macof[ip]=mac; endof[ip]=ends }
+END {
+  print "IP               MAC                NAMA        ENDS                  STATUS"
+  bad=0
+  for (ip in state) {
+    if (state[ip] != "active") continue
+    m = macof[ip]
+    cnt[m]++
+    if (!(m in pol)) { printf "%-16s %-18s %-11s %-21s TIDAK DIKENAL\n", ip, m, "-", endof[ip]; bad++; continue }
+    split(pol[m], p, " ")
+    n = ip; sub(/.*\./, "", n); pre = substr(ip, 1, length(ip)-length(n))
+    ok = (pre == p[2] && n+0 >= p[3]+0 && n+0 <= p[4]+0)
+    printf "%-16s %-18s %-11s %-21s %s\n", ip, m, p[1], endof[ip], (ok ? "OK" : "DI LUAR POOL")
+    if (!ok) bad++
+  }
+  for (m in cnt) if (cnt[m] > 1) { printf "!! MAC %s memegang %d IP aktif sekaligus\n", m, cnt[m]; bad++ }
+  print (bad == 0 ? "\nHASIL: tidak ada pelanggaran kebijakan pool." : "\nHASIL: ada " bad " temuan, periksa baris di atas.")
+}' $LEASES | sort
+```
+
+![alt text](assets/8-cek-lease.png)
+
+Dari gambar tersebut terlihat setiap alamat aktif berstatus OK. IP dan MAC pada tabel sama dengan hasil cek-klien.sh, kedelapan alamat berbeda satu sama lain, dan tidak ada alamat pada rentang 10.79.2.36 sampai 10.79.2.69 maupun 10.79.3.90 sampai 10.79.3.98. Kugisaki dapat tidak muncul pada dhcpd.leases, sehingga alamat 10.79.3.99 dibuktikan lewat reservasi pada hosts.conf dan output klien.
+
+**8. Sebelum Curtain dibuka kembali, buktikan bahwa proses pemberian alamat berjalan sesuai protokol. Lakukan packet capture saat salah satu client Network 2 atau Network 3 meminta lease baru. Gunakan tcpdump pada tengen atau jalur menuju Data Center untuk menunjukkan urutan DHCPDISCOVER → DHCPOFFER → DHCPREQUEST → DHCPACK. Identifikasi alamat server, alamat yang diberikan, lease time, dan field giaddr. Pastikan nilai giaddr sesuai dengan interface jichi yang menerima request dari subnet client.**
+
+Jadi pertama-tama melakukan capture pada node tengen ketika salah satu client di network 2 atau network 3 melakukan request lease baru.
+Capture dilakukan dengan tcpdump. Pertama-tama kita install dulu:
+
+```sh
+apt install -y tcpdump
+```
+
+Kemudian capture dijalankan sekaligus akan disimpan ke soal-8.pcap dengan command berikut ini.
+
+```sh
+tcpdump -i eth0 -n -v -e port 67 or port 68 -w /root/soal-8.pcap
+```
+
+Kemudian saat capture sudah berjalan, dari sisi client dilakukan request lease baru dengan command berikut.
+
+```sh
+bash soal-4-bukti.sh 
+```
+
+Setelah itu kita kembali ke node tengen, disitu akan terlihat bahwa sudah ada paket yg tercapture. Kita hentikan proses capture dgn `ctrl+c`, setelah itu kita bisa melihat hasil capture yang telah dilakukan.
+
+```sh
+tcpdump -n -vvv -r /root/soal-8.pcap
+```
+
+![alt text](assets/8-hasil-tcpdump.png)
+
+Dari paket tersebut dapat dilihat proses dari DHCP yang dimulai dari Discover -> Offer -> Request -> ACK. Kemudian untuk analisis alamat server, alamat yang diberikan, lease time, dan giaddr adalah sebagai berikut.
+
+- **Alamat server:** `10.79.4.10` (tengen), dari `Server-ID (54)` pada Offer dan ACK.
+- **Alamat yang diberikan:** `10.79.2.13`, dari `Your-IP` pada Offer dan ACK. Alamat ini berada di rentang Pool 1 (`10.79.2.10` sampai `10.79.2.35`).
+- **Lease time:** `600` detik, dari `Lease-Time (51)`. Pool 1 memakai `default-lease-time` global.
+- **giaddr:** `10.79.2.1`, dari `Gateway-IP` pada keempat paket.
+
+eth2 bernilai `10.79.2.1/24` dan Itadori berada di Network 2, sehingga Discover-nya diterima relay di eth2 dan `giaddr` diisi `10.79.2.1`, sama dengan `Gateway-IP` pada capture.
+
+**9. Sebuah gangguan memutus jalur relay dan membuat permintaan alamat tidak sampai ke Data Center. Hentikan service DHCP Relay pada jichi, lalu paksa salah satu client di Network 2 atau Network 3 meminta lease baru dan catat gejalanya. Pulihkan service relay, ulangi permintaan DHCP, lalu buktikan bahwa client kembali memperoleh alamat dari pool yang benar dengan gateway semula.**
+
+Jadi kita diminta untuk mematikan service dhcp relay, kemudian melakukan request lease di salah satu client untuk mengamati dan mencatat gejalanya. 
+
+Pertama-tama kita stop service dhcp relay pada node jichi.
+```sh
+service isc-dhcp-relay stop
+ps aux | grep [d]hcrelay
+```
+
+Kemudian kita menjalankan tcpdump di node jichi dan tengen untuk mencatat gejalanya.
+
+```
+tcpdump -i eth2 -n port 67 or port 68 # tengen
+tcpdump -i eth0 -n port 67 or port 68 # jichi 
+```
+
+Setelah tcpdump berjalan, selanjutnya melalui salah satu klien yaitu node itadori, kita melakukan request lease baru.
+
+```sh
+bash soal-4-bukti.sh
+```
+
+![alt text](assets/9-req-lease.png)
+
+Dari gambar tersebut dilihat bahwa permintaan lease baru gagal karena service dhcp relay dihentikan.
+
+Setelah melakukan request lease baru, selanjutnya mencatat dan mengamati gejala dari langkah yang sudah dilakukan.
+
+Pada node tengen, tcpdump tidak menangkap paket apapun.
+
+![alt text](assets/9-tengen-dhcp-off.png)
+
+Sementara pada node jichi, hasil tcpdump menangkap paket request namun tidak ada reply yang dikembalikan.
+
+![alt text](assets/9-jichi-dhcp-off.png)
+
+Selanjutnya kita menyalakan ulang service dhcp relay dan mengulangi kembali langkah yang sudah kita lakukan sebelumnya. 
+
+```sh
+service isc-dhcp-relay start
+ps aux | grep [d]hcrelay
+```
+
+Kemudian melakukan tcpdump melalui node Tengen dan jichi.
+
+```
+tcpdump -i eth2 -n port 67 or port 68 # tengen
+tcpdump -i eth0 -n port 67 or port 68 # jichi 
+```
+
+Setelah tcpdump berjalan, selanjutnya melalui salah satu klien yaitu node itadori, kita melakukan request lease baru.
+
+```sh
+bash soal-4-bukti.sh
+```
+
+Dari gambar tersebut dilihat bahwa permintaan lease baru berhasil karena service dhcp relay telah dinyalakan kembali. Itadori kembali memperoleh alamat 10.79.2.13 dari 10.79.4.10 dengan gateway 10.79.2.1. Alamat ini berada di rentang Pool 1 (10.79.2.10 sampai 10.79.2.35), dan DNS serta domain-search juga diterima kembali.
+
+Setelah melakukan request lease baru, selanjutnya mencatat dan mengamati gejala dari langkah yang sudah dilakukan.
+
+![alt text](assets/9-jichi-dhcp-on.png)
+
+Pada capture di jichi setelah pemulihan menunjukkan pola berbeda dari saat relay mati. Setiap Discover dari itadori kini dijawab Reply dari 10.79.2.1, yaitu relay di eth2 yang meneruskan Offer dan ACK dari tengen ke klien. Proses DORA berlangsung lengkap.
+
+![alt text](assets/9-tengen-dhcp-on.png)
+
+Semntara capture di tengen setelah relay dipulihkan menunjukkan transaksi DHCP itadori. Discover dan Request tiba dari 10.79.4.1 (eth4 jichi) ke 10.79.4.10, sedangkan Offer dan ACK dikirim tengen ke 10.79.2.1 (eth2 jichi), sehingga terbukti permintaan klien Network 2 kembali diteruskan oleh relay.
+
+**10. Setelah gangguan Shibuya tertangani, pastikan pemulihan bertahan setelah restart. Aktifkan autostart DHCP Server pada tengen dan DHCP Relay pada jichi, lalu restart kedua node. Verifikasi status layanan, IP, gateway, lease, dan konektivitas client Network 2–3. Pastikan kebijakan Pool 1, Pool 2, short lease, long lease, dan fixed address tetap berlaku.**
+
+Pertama-tama pada node tengen, baris up service isc-dhcp-server start ditambahkan di bawah gateway. 
+
+```sh
+grep -q 'service isc-dhcp-server start' /etc/network/interfaces || \
+sed -i '/^    gateway 10.79.4.1/a\    up service isc-dhcp-server start' /etc/network/interfaces
+cat /etc/network/interfaces
+```
+
+Pada node jichi, baris up service isc-dhcp-relay start ditaruh di blok eth4 (interface terakhir) agar eth2, eth3, dan eth4 sudah punya IP saat relay dijalankan.
+
+```sh
+grep -q 'service isc-dhcp-relay start' /etc/network/interfaces || \
+sed -i '/^    address 10.79.4.1/a\    up service isc-dhcp-relay start' /etc/network/interfaces
+cat /etc/network/interfaces
+```
+
+Di GNS3, jichi kemduain tengen di-Stop dan di-Start kembaki. 
+
+Selanjutnya setelah kedua node berhasil menyala kembali, verifikasi layanan setelah restart.
+
+Di tengen:
+
+```sh
+date
+service isc-dhcp-server status
+ps aux | grep [d]hcpd
+ip -4 a show eth0
+ip route
+dhcpd -t -cf /etc/dhcp/dhcpd.conf
+```
+
+![alt text](assets/10-verifikasi-dhcp-server.png)
+
+dhcpd is running dengan proses yang mulai saat boot, eth0 bernilai 10.79.4.10/24, default via 10.79.4.1, dan dhcpd -t lolos tanpa error.
+
+Di jichi:
+
+```sh
+date
+ps aux | grep [d]hcrelay
+ip -4 a
+cat /proc/sys/net/ipv4/ip_forward
+iptables -t nat -L POSTROUTING -n
+ping -c 2 10.79.4.10
+```
+
+![alt text](assets/10-verifikasi-dhcp-relay.png)
+
+Proses dhcrelay -q -i eth2 -i eth3 -i eth4 10.79.4.10 berjalan sejak boot, IP eth1 sampai eth4 sudah sesuai, ip_forward bernilai 1, aturan MASQUERADE ada, dan ping ke tengen berhasil. 
+
+Langkah selanjutnya memverifikasi bahwa kebijakan tetap berlaku.
+
+Isi konfigurasi di tengen diperiksa untuk memastikan tidak berubah oleh restart.
+
+```sh
+cat /etc/dhcp/dhcpd.conf /etc/dhcp/conf.d/*.conf
+```
+
+![alt text](assets/10-validasi-konfigurasi-tengen.png)
+
+Seluruh kebijakan masih ada: class pool1 dan pool2 dengan range 10.79.2.10-.35 dan 10.79.2.70-.95, class short-lease (1800 detik, 10.79.3.10-.89) dan long-lease (43200 detik, 10.79.3.100-.199), reservasi kugisaki 10.79.3.99, serta DNS 10.79.1.2, 10.79.1.3 dan domain K31.com.
+
+Selanjutnya memverifikasi bahwa kebijakan yang telah diterapkan di klien masih berlaku.
+
+![alt text](assets/10-verifikasi-klien-net2.png)
+
+Dilakukan pengujian di salah satu klien network 2 yaitu Itadori. Dapat dilihat bawah itadori mendapatkan rentang sesuai dengan kebijakan yang telah diterapkan yaitu di rentang .10-.35 (Pool 1).
+
+![alt text](assets/10-verifikasi-klien-net3.png)
+
+Kemudian, dilakukan juga pengujian di salah satu klien network 3 yaitu Ino. Dapat dilihat bawah Ino mendapatkan rentang sesuai dengan kebijakan yang telah diterapkan yaitu di rentang .10-.89 dengan lease time 1800.
 
 **11. utahime dan shoko ditugaskan membangun sistem penamaan domain resmi agar seluruh pos tidak perlu menghafal alamat IP mentah. Konfigurasikan BIND9 pada utahime sebagai DNS Master dan shoko sebagai DNS Slave untuk mengelola domain jujutsu.< xxxx>.com. Atur SOA record, NS delegasi untuk kedua server, dan terapkan allow-transfer dari Master ke Slave. Pastikan file zona berhasil tersinkronisasi otomatis ke shoko saat nomor serial di utahime dinaikkan, lalu buktikan dengan melakukan query dig ke kedua server dari salah satu client.**
 
