@@ -6,3 +6,932 @@
 | Nabila Sharliz Sigit | 5027251054 | 11-20
 
 ## Reporting
+
+**1. Ketika Curtain menutup Shibuya, jalur komunikasi antar zona Jujutsu High terputus. Pulihkan konektivitas dasar dengan mengonfigurasi jichi: eth0 memperoleh WAN dari NAT, sedangkan eth1–eth4 menjadi gateway Network 1–4 sesuai tabel pemetaan. Aktifkan IPv4 forwarding dan source NAT, lalu tetapkan IP statis host infrastruktur sesuai tabel spesifikasi. Buktikan konektivitas setiap host ke gateway dan akses eksternal dari host yang relevan.**
+
+Langkah pertama adalah membuat topologi jaringan sesuai dengan ketentuan yang telah diberikan. 
+
+![topologi](assets/topologi.png)
+
+Pada topologi tersebut terdapat 1 router (jichi) dan 4 zona jaringan yang terdiri dari Network 1, Network 2, Network 3, serta Network 4. 
+
+Network 1 menampung DNS Master **utahime**, DNS Slave **shoko**, dan public reverse proxy **gojo**. Network 2 menampung klien divisi A yang terdiri dari **Itadori, Fushiguro, Zenin, dan Okkotsu** yang nantinya akan mendapatkan IP Address melalui DHCP. Network 3 menampung klien divisi  B yang terdiri dari **Ino, Kusakabe, kugisaki, dan Miwa**. Network 4 menampung DHCP Server **tengen**, internal load balancer **geto**, worker aplikasi: **maki, panda, nanami, todo, kirara,** dan database: **inumaki, yaga**.
+
+Setelah membuat topologi, langkah selanjutnya adalah mengonfigurasi jichi agar eth0 memperoleh WAN dari NAT, sedangkan eth1–eth4 menjadi gateway Network 1–4. Kemdudian mengaktifkan IPv4 forwarding dan source NAT.
+
+Konfigurasi interfaces yang digunakan adalah sebagai berikut. 
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet dhcp
+    up sysctl -w net.ipv4.ip_forward=1
+    up iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+
+auto eth1
+iface eth1 inet static
+    address 10.79.1.1
+    netmask 255.255.255.0
+
+auto eth2
+iface eth2 inet static
+    address 10.79.2.1
+    netmask 255.255.255.0
+
+auto eth3
+iface eth3 inet static
+    address 10.79.3.1
+    netmask 255.255.255.0
+
+auto eth4
+iface eth4 inet static
+    address 10.79.4.1
+    netmask 255.255.255.0
+```
+
+Kemudian mengatur DNS resolver pada jichi agar sistem dapat menerjemahkan nama domain menjadi IP. 
+
+```sh
+echo "nameserver 192.168.122.1" > /etc/resolv.conf
+```
+
+Setelah konfigurasi interface selesai, langkah selanjutnya adalah mengaktifkan IPv4 forwarding dan mengatur aturan firewall pada jichi. Script berikut digunakan untuk memastikan paket dari Network 1 hingga Network 4 dapat diteruskan menuju jaringan luar melalui eth0.
+
+```sh
+apt update
+apt install -y iptables
+
+sysctl -w net.ipv4.ip_forward=1
+
+iptables -t nat -C POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || \
+iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+
+for i in eth1 eth2 eth3 eth4; do
+  iptables -C FORWARD -i $i -o eth0 -j ACCEPT 2>/dev/null || \
+  iptables -A FORWARD -i $i -o eth0 -j ACCEPT
+done
+
+iptables -C FORWARD -i eth0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || \
+iptables -A FORWARD -i eth0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+```
+
+![alt text](assets/1-rule-forwardinng.png)
+
+![alt text](assets/1-forwarding-routing.png)
+
+Setelah Jichi selesai dikonfigurasi, langkah selanjutnya adalah menetapkan IP statis untuk setiap host infrastruktur. 
+
+Untuk Utahime [Network 1]
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 10.79.1.2
+    netmask 255.255.255.0
+    gateway 10.79.1.1
+```
+
+Untuk Shoko [Network 1]
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 10.79.1.3
+    netmask 255.255.255.0
+    gateway 10.79.1.1
+```
+
+Untuk Gojo [Network 1]
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 10.79.1.4
+    netmask 255.255.255.0
+    gateway 10.79.1.1
+```
+
+Untuk Tengen
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 10.79.4.10
+    netmask 255.255.255.0
+    gateway 10.79.4.1
+```
+
+Untuk Geto
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 10.79.4.3
+    netmask 255.255.255.0
+    gateway 10.79.4.1
+```
+
+Untuk Maki
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 10.79.4.4
+    netmask 255.255.255.0
+    gateway 10.79.4.1
+```
+
+Untuk Panda
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 10.79.4.5
+    netmask 255.255.255.0
+    gateway 10.79.4.1
+```
+
+Untuk Nanami 
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 10.79.4.6
+    netmask 255.255.255.0
+    gateway 10.79.4.1
+```
+
+Untuk Todo
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 10.79.4.7
+    netmask 255.255.255.0
+    gateway 10.79.4.1
+```
+
+Untuk Kirara
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 10.79.4.8
+    netmask 255.255.255.0
+    gateway 10.79.4.1
+```
+
+Untuk Yaga
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 10.79.4.9
+    netmask 255.255.255.0
+    gateway 10.79.4.1
+```
+
+Untuk Inumaki 
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 10.79.4.2
+    netmask 255.255.255.0
+    gateway 10.79.4.1
+```
+
+Kemudian untuk seluruh klien baik divisi A maupun divisi B dikonfigurasi sebagai berikut.
+```
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet dhcp
+```
+
+Setelah semua host dan klien selesai dikonfigurasi, selanjutnya membuktikan konektivitas setiap host ke gateway dan akses eksternal dari host yang relevan.
+
+![ ](assets/1-test-host-01.png)
+
+![alt text](assets/1-test-host-02.png)
+
+![alt text](assets/1-test-host-03.png)
+
+![alt text](assets/1-test-host-04.png)
+
+![alt text](assets/1-test-host-05.png)
+
+**2. Tengen, penjaga pusat distribusi di Data Center, harus mengambil alih pengalokasian alamat bagi wilayah yang membutuhkan konfigurasi dinamis. Konfigurasikan isc-dhcp-server pada [PREFIX IP].4.10. Deklarasikan Network 4 ([PREFIX IP].4.0/24) sebagai subnet lokal tanpa pool dinamis, lalu siapkan scope DHCP untuk Network 2 ([PREFIX IP].2.0/24) dan Network 3 ([PREFIX IP].3.0/24). Validasi konfigurasi dan pastikan service aktif tanpa error “No subnet declaration”.**
+
+Pada soal ini tengen dijadikan DHCP server untuk wilayah yang membutuhkan konfigurasi dinamis, yaitu Network 2 dan Network 3. Tengen berada di Network 4 dengan IP 10.79.4.10, sehingga klien di Network 2 dan 3 tidak satu broadcast domain dengannya. Permintaan mereka nantinya diteruskan oleh relay di jichi, dan tengen memilih scope berdasarkan field giaddr yang berisi IP interface relay (10.79.2.1 atau 10.79.3.1).
+
+Pertam tama dibuat script `konfigurasi-tengen.sh` Script ini memasang isc-dhcp-server, membatasi dhcpd agar hanya mendengarkan di eth0, lalu menulis konfigurasi. Konfigurasi dipecah menjadi beberapa file yang dipanggil lewat include, supaya script pada nomor berikutnya hanya menimpa file miliknya sendiri dan tidak merusak hasil nomor sebelumnya.
+
+```sh
+#!/bin/sh
+apt update
+apt install -y isc-dhcp-server
+
+sed -i 's/^INTERFACESv4=.*/INTERFACESv4="eth0"/' /etc/default/isc-dhcp-server
+mkdir -p /etc/dhcp/conf.d
+
+cat > /etc/dhcp/dhcpd.conf <<CONF
+authoritative;
+default-lease-time 600;
+max-lease-time 7200;
+
+include "/etc/dhcp/conf.d/classes.conf";
+include "/etc/dhcp/conf.d/net4.conf";
+include "/etc/dhcp/conf.d/net2.conf";
+include "/etc/dhcp/conf.d/net3.conf";
+CONF
+
+touch /etc/dhcp/conf.d/classes.conf
+
+cat > /etc/dhcp/conf.d/net4.conf <<CONF
+# Network 4 - subnet lokal
+subnet 10.79.4.0 netmask 255.255.255.0 {
+    option routers 10.79.4.1;
+}
+CONF
+
+cat > /etc/dhcp/conf.d/net2.conf <<CONF
+# Network 2 - scope DHCP
+subnet 10.79.2.0 netmask 255.255.255.0 {
+    range 10.79.2.10 10.79.2.200;
+    option routers 10.79.2.1;
+    option broadcast-address 10.79.2.255;
+    option domain-name-servers 192.168.122.1;
+}
+CONF
+
+cat > /etc/dhcp/conf.d/net3.conf <<CONF
+# Network 3 - scope DHCP
+subnet 10.79.3.0 netmask 255.255.255.0 {
+    range 10.79.3.10 10.79.3.200;
+    option routers 10.79.3.1;
+    option broadcast-address 10.79.3.255;
+    option domain-name-servers 192.168.122.1;
+}
+CONF
+
+dhcpd -t -cf /etc/dhcp/dhcpd.conf && echo "done"
+service isc-dhcp-server restart
+```
+
+Pertama-tama tengen diarahkan ke nameserver 192.168.122.1 agar dapat me-resolve nama repositori, lalu daftar paket diperbarui dan paket DHCP server diunduh dengan perintah berikut.
+
+```sh
+echo "nameserver 192.168.122.1" > /etc/resolv.conf
+apt update
+apt install -y isc-dhcp-server
+```
+
+Kemudian, apabila paket sudah terpasang, selanjutnya interface yang didengarkan oleh dhcpd diatur. File `/etc/default/isc-dhcp-server` diubah sehingga INTERFACESv4 bernilai eth0. Dengan begitu dhcpd hanya mendengarkan pada eth0 yang berada di Network 4. Setelah itu dibuat `folder /etc/dhcp/conf.d` untuk menampung file konfigurasi yang dipisah per bagian.
+
+```sh
+sed -i 's/^INTERFACESv4=.*/INTERFACESv4="eth0"/' /etc/default/isc-dhcp-server
+mkdir -p /etc/dhcp/conf.d
+```
+
+Selanjutnya file utama `/etc/dhcp/dhcpd.conf` ditulis. Isinya pengaturan global, yaitu authoritative agar tengen menjadi server resmi bagi subnet yang dilayani, lease standar 600 detik, dan lease maksimum 7200 detik. Setelah itu ditambahkan baris include yang memanggil file class, subnet Network 4, Network 2, dan Network 3. 
+
+```sh
+cat > /etc/dhcp/dhcpd.conf <<CONF
+authoritative;
+default-lease-time 600;
+max-lease-time 7200;
+
+include "/etc/dhcp/conf.d/classes.conf";
+include "/etc/dhcp/conf.d/net4.conf";
+include "/etc/dhcp/conf.d/net2.conf";
+include "/etc/dhcp/conf.d/net3.conf";
+CONF
+```
+
+Setelah itu subnet Network 4 dideklarasikan pada net4.conf. Eth0 tengen berada di 10.79.4.0/24, dan dhcpd hanya mau berjalan bila alamat interface-nya masuk ke salah satu blok subnet. Tanpa deklarasi ini akan muncul error No subnet declaration for eth0. Subnet ini sengaja tidak diberi baris range, sehingga tidak ada alamat yang dibagikan di Network 4, dan hanya option routers yang dicantumkan.
+
+```sh
+cat > /etc/dhcp/conf.d/net4.conf <<CONF
+subnet 10.79.4.0 netmask 255.255.255.0 {
+    option routers 10.79.4.1;
+}
+CONF
+```
+
+Kemudian scope DHCP untuk Network 2 dan Network 3 disiapkan pada net2.conf dan net3.conf. Masing-masing berisi rentang alamat yang boleh dibagikan (range), gateway (option routers) yang mengarah ke jichi, alamat broadcast subnet, dan DNS yang dikirim ke klien. Klien kedua network ini tidak satu broadcast domain dengan tengen, sehingga permintaan mereka diteruskan relay jichi, dan tengen memilih scope yang sesuai berdasarkan giaddr, yaitu 10.79.2.1 atau 10.79.3.1.
+
+```sh
+cat > /etc/dhcp/conf.d/net2.conf <<CONF
+subnet 10.79.2.0 netmask 255.255.255.0 {
+    range 10.79.2.10 10.79.2.200;
+    option routers 10.79.2.1;
+    option broadcast-address 10.79.2.255;
+    option domain-name-servers 192.168.122.1;
+}
+CONF
+
+cat > /etc/dhcp/conf.d/net3.conf <<CONF
+subnet 10.79.3.0 netmask 255.255.255.0 {
+    range 10.79.3.10 10.79.3.200;
+    option routers 10.79.3.1;
+    option broadcast-address 10.79.3.255;
+    option domain-name-servers 192.168.122.1;
+}
+CONF
+```
+
+Selanjutnya, konfigurasi diuji sintaksnya dengan dhcpd -t, dan teks done hanya muncul bila pengujian lolos. Apabila lolos, service dijalankan ulang agar dhcpd membaca konfigurasi yang baru.
+
+```sh
+dhcpd -t -cf /etc/dhcp/dhcpd.conf && echo "done"
+service isc-dhcp-server restart
+```
+
+Terakhir, konfigurasi tersebut divalidasi dan service diperiksa.
+
+![alt text](assets/2-validasi.png)
+
+Dari gambar tersebut terlihat dhcpd -t selesai tanpa error, status service dhcpd is running dan proses dhcpd -4 ... eth0 berjalan.
+
+**3. Permintaan alamat dari Divisi A dan Divisi B tidak dapat menyeberangi subnet secara langsung. Konfigurasikan jichi sebagai DHCP Relay menuju tengen ([PREFIX IP].4.10), menggunakan eth2 untuk Network 2 dan eth3 untuk Network 3. Buktikan bahwa client dari kedua subnet berhasil memperoleh lease melalui relay.**
+
+Pertama-tama dibuat script `konfigurasi-dhcp-relay.sh`. 
+
+Script ini memperbarui daftar paket, kemudian memasang paket isc-dhcp-relay. 
+
+```sh
+apt update
+DEBIAN_FRONTEND=noninteractive apt install -y isc-dhcp-relay
+```
+
+Kemudian, apabila paket sudah terpasang, selanjutnya file `/etc/default/isc-dhcp-relay` ditulis. SERVERS berisi alamat DHCP server tujuan, yaitu tengen. INTERFACES berisi eth2 dan eth3 sebagai sisi klien yang menerima Discover. Selain itu eth4 juga dicantumkan karena relay memerlukannya sebagai jalur ke tengen dan untuk menerima balasan dari tengen.
+
+```sh
+cat > /etc/default/isc-dhcp-relay <<CONF
+SERVERS="10.79.4.10"
+INTERFACES="eth2 eth3 eth4"
+OPTIONS=""
+CONF
+```
+
+Selanjutnya service relay dijalankan ulang agar membaca konfigurasi baru, lalu statusnya diperiksa.
+
+```sh
+service isc-dhcp-relay restart
+sleep 2
+service isc-dhcp-relay status
+```
+
+Berikut script lengkap dari `konfigurasi-dhcp-relay.sh`.
+
+```sh
+##!/bin/sh
+
+apt update
+DEBIAN_FRONTEND=noninteractive apt install -y isc-dhcp-relay
+
+cat > /etc/default/isc-dhcp-relay <<CONF
+SERVERS="10.79.4.10"
+INTERFACES="eth2 eth3 eth4"
+OPTIONS=""
+CONF
+
+service isc-dhcp-relay restart
+sleep 2
+service isc-dhcp-relay status
+```
+
+Setelah script dijalankan, selanjutnya membuktikan bahwa klien dari kedua subnet memperoleh lease melalui relay. Pada setiap klien (itadori, fushiguro, zenin, okkotsu di Network 2 dan ino, kusakabe, miwa, kugisaki di Network 3) dijalankan script berikut. 
+
+```sh
+#!/bin/sh
+
+echo "===== $(hostname) ====="
+udhcpc -i eth0 -n -q
+echo "--- IP eth0 ---"
+ip -4 a show eth0 | grep inet
+echo "--- Route ---"
+ip route
+echo "--- DNS ---"
+cat /etc/resolv.conf
+GW=$(ip route | awk '/^default/ {print $3}')
+echo "--- Ping gateway ($GW) ---"
+ping -c 3 $GW
+```
+
+Berikut hasil pengujian untuk salah satu klien di Network 2 yaitu Itadori.
+
+![alt text](assets/3-bukti-itadori.png)
+
+Dari gambar tersebut terlihat klien Network 2 memperoleh alamat 10.79.2.10/24 dengan gateway 10.79.2.1, dan pada baris udhcpc tertulis lease of 10.79.2.10 obtained from 10.79.4.10. Server yang menjawab adalah tengen (10.79.4.10), sehingga terbukti permintaan diteruskan oleh relay.
+
+Kemudian untuk klien di Network 3 yang diuji adalah Ino.
+
+![alt text](assets/3-bukti-ino.png)
+
+Dari gambar tersebut terlihat klien Network 3 memperoleh alamat 10.79.3.10/24 dengan gateway 10.79.3.1, dan lease juga diperoleh dari 10.79.4.10.
+
+**4. Agar tim Dev dan Support di Divisi A menerima jatah alamat yang berbeda, atur dua pool DHCP pada Network 2. Tetapkan Pool 1 ([PREFIX IP].2.10–[PREFIX IP].2.35) untuk itadori dan fushiguro, serta Pool 2 ([PREFIX IP].2.70–[PREFIX IP].2.95) untuk zenin dan okkotsu. Rentang [PREFIX IP].2.36–[PREFIX IP].2.69 tidak boleh dialokasikan. Karena seluruh client berada pada subnet yang sama, gunakan DHCP class berdasarkan MAC Address atau Client ID untuk memisahkan kedua kelompok.**
+
+Pertama-tama mencari MAC address eth0 dari keempat klien, karena nilai inilah yang menjadi dasar DHCP class. Perintah ini dijalankan di itadori, fushiguro, zenin, dan okkotsu.
+
+```
+ip link show eth0 | grep link/ether
+```
+
+![alt text](assets/4-MAC-okkotsu.png)
+
+![alt text](assets/4-MAC-zenin.png)
+
+![alt text](assets/4-MAC-itadori.png)
+
+![alt text](assets/4-MAC-fushiguro.png)
+
+Itadori: 02:42:84:8e:7f:00 
+Fushiguro: 02:42:b3:70:a5:00 
+Zenin: 02:42:78:df:4b:00
+Okkotsu:  02:42:c1:aa:65:00 
+
+Kemudian membuat script `soal-4-konfigurasi-tengen.sh` di tengen. Pertama-tama, keempat MAC address klien disimpan dalam variabel di bagian atas script, supaya apabila MAC berubah, cukup nilai variabelnya yang diganti tanpa mengubah bagian lain.
+
+sh
+MAC_ITADORI="02:42:84:8e:7f:00"
+MAC_FUSHIGURO="02:42:b3:70:a5:00"
+MAC_ZENIN="02:42:78:df:4b:00"
+MAC_OKKOTSU="02:42:c1:aa:65:00"
+
+Selanjutnya pada file /etc/dhcp/conf.d/classes.conf dibuat dua class, yaitu pool1 dan pool2. Baris match hardware; membuat keanggotaan class ditentukan oleh MAC address klien. Setelah class terbentuk, tiap MAC didaftarkan sebagai anggota dengan subclass. Angka 1: di depan MAC menunjukkan tipe hardware Ethernet. itadori dan fushiguro masuk pool1, sedangkan zenin dan okkotsu masuk pool2.
+
+```sh
+cat > /etc/dhcp/conf.d/classes.conf <<CONF
+class "pool1" {
+    match hardware;
+}
+subclass "pool1" 1:${MAC_ITADORI};
+subclass "pool1" 1:${MAC_FUSHIGURO};
+
+class "pool2" {
+    match hardware;
+}
+subclass "pool2" 1:${MAC_ZENIN};
+subclass "pool2" 1:${MAC_OKKOTSU};
+CONF
+```
+
+Kemudian, setelah class terbentuk, file /etc/dhcp/conf.d/net2.conf ditulis ulang. Pada bagian awal subnet 10.79.2.0 diatur opsi yang berlaku untuk semua klien, yaitu gateway (option routers), alamat broadcast, dan DNS yang dikirim ke klien.
+
+```sh
+cat > /etc/dhcp/conf.d/net2.conf <<CONF
+subnet 10.79.2.0 netmask 255.255.255.0 {
+    option routers 10.79.2.1;
+    option broadcast-address 10.79.2.255;
+    option domain-name-servers 192.168.122.1;
+```
+
+Selanjutnya, di dalam subnet tersebut dibuat blok pool pertama. Baris allow members of "pool1" membatasi pool ini hanya untuk anggota class pool1, sedangkan range 10.79.2.10 10.79.2.35 menentukan rentang alamat yang boleh dibagikan. Dengan begitu itadori dan fushiguro hanya akan menerima alamat dari rentang ini.
+
+```sh
+    pool {
+        allow members of "pool1";
+        range 10.79.2.10 10.79.2.35;
+    }
+```
+
+Setelah itu blok pool kedua dibuat dengan cara yang sama untuk class pool2, dengan rentang 10.79.2.70 sampai 10.79.2.95. Rentang 10.79.2.36 sampai 10.79.2.69 tidak dicantumkan pada range mana pun, sehingga tidak pernah dialokasikan. Tanda } terakhir menutup blok subnet, dan CONF menutup penulisan file.
+
+```sh
+    pool {
+        allow members of "pool2";
+        range 10.79.2.70 10.79.2.95;
+    }
+}
+CONF
+```
+Terakhir, sintaks konfigurasi diuji dengan dhcpd -t, dan teks Sintaks OK hanya muncul bila pengujian lolos.
+
+```sh
+dhcpd -t -cf /etc/dhcp/dhcpd.conf && echo "Sintaks OK"
+```
+
+Apabila sintaks sudah benar, service dihentikan terlebih dahulu, lalu file catatan lease dikosongkan dengan : > agar lease lama tidak tercampur dengan hasil pengujian yang baru. Setelah itu service dinyalakan kembali dan statusnya diperiksa.
+
+```sh
+service isc-dhcp-server stop
+: > /var/lib/dhcp/dhcpd.leases
+service isc-dhcp-server start
+service isc-dhcp-server status
+```
+Berikut script lengkapnya, yang disimpan lalu dijalankan.
+
+```sh
+#!/bin/sh
+MAC_ITADORI="02:42:84:8e:7f:00"
+MAC_FUSHIGURO="02:42:b3:70:a5:00"
+MAC_ZENIN="f2:dd:ec:51:c9:cb"
+MAC_OKKOTSU="02:42:c1:aa:65:00"
+
+cat > /etc/dhcp/conf.d/classes.conf <<CONF
+class "pool1" {
+    match hardware;
+}
+subclass "pool1" 1:${MAC_ITADORI};
+subclass "pool1" 1:${MAC_FUSHIGURO};
+
+class "pool2" {
+    match hardware;
+}
+subclass "pool2" 1:${MAC_ZENIN};
+subclass "pool2" 1:${MAC_OKKOTSU};
+CONF
+
+cat > /etc/dhcp/conf.d/net2.conf <<CONF
+subnet 10.79.2.0 netmask 255.255.255.0 {
+    option routers 10.79.2.1;
+    option broadcast-address 10.79.2.255;
+    option domain-name-servers 192.168.122.1;
+
+    # Pool 1: itadori, fushiguro
+    pool {
+        allow members of "pool1";
+        range 10.79.2.10 10.79.2.35;
+    }
+
+    # Pool 2: zenin, okkotsu
+    pool {
+        allow members of "pool2";
+        range 10.79.2.70 10.79.2.95;
+    }
+}
+CONF
+
+dhcpd -t -cf /etc/dhcp/dhcpd.conf && echo "Sintaks OK"
+
+service isc-dhcp-server stop
+: > /var/lib/dhcp/dhcpd.leases
+service isc-dhcp-server start
+service isc-dhcp-server status
+```
+
+Selanjutnya dibuktikan bahwa tiap klien menerima alamat dari pool yang benar. Pada keempat klien dijalankan script berikut.
+```sh
+#!/bin/sh
+echo "===== $(hostname) ====="
+echo "MAC : $(ip link show eth0 | awk '/link\/ether/ {print $2}')"
+
+ip addr flush dev eth0
+udhcpc -i eth0 -n -q
+
+echo "--- IP eth0 ---"
+ip -4 a show eth0 | grep inet
+echo "--- Route ---"
+ip route
+echo "--- DNS ---"
+cat /etc/resolv.conf
+GW=$(ip route | awk '/^default/ {print $3}')
+if [ -n "$GW" ]; then
+  echo "--- Ping gateway ($GW) ---"
+  ping -c 3 $GW
+else
+  echo "Tidak ada default route, lease gagal"
+fi
+```
+
+![alt text](assets/4-ip-itadori.png)
+
+![alt text](assets/4-ip-fushiguro.png)
+
+Dari gambar tersebut terlihat itadori dan fushiguro memperoleh alamat pada rentang 10.79.2.10 sampai 10.79.2.35 (Pool 1), dengan gateway 10.79.2.1.
+
+![alt text](assets/4-ip-okkotsu.png)
+
+![alt text](assets/4-ip-zenin.png)
+
+Dari gambar tersebut terlihat zenin dan okkotsu memperoleh alamat pada rentang 10.79.2.70 sampai 10.79.2.95 (Pool 2), dengan gateway yang sama.
+
+**5. Setiap tim lapangan memiliki durasi operasi yang berbeda. Pada Network 3, berikan short lease 30 menit (1800 detik) kepada ino dan kusakabe, serta long lease 12 jam (43200 detik) kepada miwa. Gunakan pool short lease [PREFIX IP].3.10–[PREFIX IP].3.89 dan pool long lease [PREFIX IP].3.100–[PREFIX IP].3.199. Sesuaikan default-lease-time dan max-lease-time untuk setiap kelas client. Berikan pula DHCP options berupa DNS [PREFIX IP].1.2 dan [PREFIX IP].1.3, serta domain-search <xxxx>.com.**
+
+Pertama-tama mencari MAC address eth0 dari ino, kusakabe, dan miwa. Command ini dijalankan di masing-masing klien.
+
+```sh
+ip link show eth0 | grep link/ether
+```
+
+![alt text](assets/5-MAC-ino.png)
+
+![alt text](assets/5-MAC-Kusakabe.png)
+
+![alt text](assets/5-MAC-miwa.png)
+
+Ino:  02:42:97:71:9c:00
+Kusakabe: 02:42:b9:bd:e6:00
+Miwa: 02:42:eb:4b:9e:00 
+
+Kemudian dibuat script `soal-5-konfigurasi-tengen.sh` di tengen. Pertama-tama, ketiga MAC disimpan dalam variabel di bagian atas script, supaya apabila MAC berubah cukup nilai variabelnya yang diganti.
+
+```sh
+MAC_INO="02:42:97:71:9c:00"
+MAC_KUSAKABE="02:42:b9:bd:e6:00"
+MAC_MIWA="02:42:eb:4b:9e:00"
+```
+
+Selanjutnya mengisi konfigurasi di file /etc/dhcp/conf.d/net3.conf, bagian pertama berisi dua class. Class short-lease beranggotakan ino dan kusakabe, sedangkan class long-lease beranggotakan miwa. Baris match hardware; membuat keanggotaan ditentukan oleh MAC klien, lalu tiap MAC didaftarkan dengan subclass. Angka 1: di depan MAC adalah tipe hardware Ethernet.
+
+```sh
+cat > /etc/dhcp/conf.d/net3.conf <<CONF
+class "short-lease" {
+    match hardware;
+}
+subclass "short-lease" 1:${MAC_INO};
+subclass "short-lease" 1:${MAC_KUSAKABE};
+
+class "long-lease" {
+    match hardware;
+}
+subclass "long-lease" 1:${MAC_MIWA};
+```
+
+Kemudian, pada blok subnet 10.79.3.0 diatur opsi yang berlaku untuk semua klien Network 3. option routers adalah gateway (jichi eth3), option broadcast-address adalah alamat broadcast subnet, option domain-name-servers berisi DNS utahime dan shoko, dan option domain-search berisi domain pencarian K31.com. 
+
+```sh
+subnet 10.79.3.0 netmask 255.255.255.0 {
+    option routers 10.79.3.1;
+    option broadcast-address 10.79.3.255;
+    option domain-name-servers 10.79.1.2, 10.79.1.3;
+    option domain-search "K31.com";
+```
+
+Selanjutnya dibuat blok pool pertama untuk short lease. Baris allow members of "short-lease"; membatasi pool ini hanya untuk anggota class short-lease, dan range menentukan rentang alamatnya. Baris default-lease-time dan max-lease-time diatur 1800 detik sehingga durasi lease ino dan kusakabe pasti 30 menit.
+
+```sh
+    pool {
+        allow members of "short-lease";
+        range 10.79.3.10 10.79.3.89;
+        default-lease-time 1800;
+        max-lease-time 1800;
+    }
+```
+
+Setelah itu blok pool kedua dibuat dengan cara yang sama untuk class long-lease, dengan rentang 10.79.3.100 sampai 10.79.3.199 dan lease time 43200 detik (12 jam). Rentang .90 sampai .99 tidak dicantumkan pada range mana pun, sehingga alamat 10.79.3.99 aman dipakai untuk fixed address kugisaki. Tanda } terakhir menutup blok subnet, dan CONF menutup penulisan file.
+
+```sh
+    pool {
+        allow members of "long-lease";
+        range 10.79.3.100 10.79.3.199;
+        default-lease-time 43200;
+        max-lease-time 43200;
+    }
+}
+CONF
+```
+
+Terakhir, sintaks konfigurasi diuji dengan dhcpd -t. Apabila lolos, service dihentikan, file catatan lease dikosongkan dengan : > agar lease lama tidak tercampur dengan hasil pengujian, lalu service dinyalakan kembali dan statusnya diperiksa.
+
+```sh
+dhcpd -t -cf /etc/dhcp/dhcpd.conf && echo "Sintaks OK"
+
+service isc-dhcp-server stop
+: > /var/lib/dhcp/dhcpd.leases
+service isc-dhcp-server start
+service isc-dhcp-server status
+```
+Berikut script lengkapnya, yang disimpan lalu dijalankan.
+
+```sh
+#!/bin/sh
+MAC_INO="02:42:97:71:9c:00"
+MAC_KUSAKABE="02:42:b9:bd:e6:00"
+MAC_MIWA="02:42:eb:4b:9e:00"
+
+cat > /etc/dhcp/conf.d/net3.conf <<CONF
+# Class berdasarkan MAC address (Network 3)
+class "short-lease" {
+    match hardware;
+}
+subclass "short-lease" 1:${MAC_INO};
+subclass "short-lease" 1:${MAC_KUSAKABE};
+
+class "long-lease" {
+    match hardware;
+}
+subclass "long-lease" 1:${MAC_MIWA};
+
+# Network 3
+subnet 10.79.3.0 netmask 255.255.255.0 {
+    option routers 10.79.3.1;
+    option broadcast-address 10.79.3.255;
+    option domain-name-servers 10.79.1.2, 10.79.1.3;
+    option domain-search "K31.com";
+
+    # Short lease: ino, kusakabe (30 menit)
+    pool {
+        allow members of "short-lease";
+        range 10.79.3.10 10.79.3.89;
+        default-lease-time 1800;
+        max-lease-time 1800;
+    }
+
+    # Long lease: miwa (12 jam)
+    pool {
+        allow members of "long-lease";
+        range 10.79.3.100 10.79.3.199;
+        default-lease-time 43200;
+        max-lease-time 43200;
+    }
+}
+CONF
+
+dhcpd -t -cf /etc/dhcp/dhcpd.conf && echo "Sintaks OK"
+
+service isc-dhcp-server stop
+: > /var/lib/dhcp/dhcpd.leases
+service isc-dhcp-server start
+service isc-dhcp-server status
+```
+
+Setelah script dijalankan, selanjutnya dibuktikan bahwa tiap klien menerima alamat dan lease time yang benar. Pada ino, kusakabe, dan miwa dijalankan script berikut. 
+```sh
+#!/bin/sh
+echo "===== $(hostname) ====="
+echo "MAC : $(ip link show eth0 | awk '/link\/ether/ {print $2}')"
+
+ip addr flush dev eth0
+udhcpc -i eth0 -n -q
+
+echo "--- IP eth0 ---"
+ip -4 a show eth0 | grep inet
+echo "--- Route ---"
+ip route
+echo "--- DNS ---"
+cat /etc/resolv.conf
+GW=$(ip route | awk '/^default/ {print $3}')
+if [ -n "$GW" ]; then
+  echo "--- Ping gateway ($GW) ---"
+  ping -c 3 $GW
+else
+  echo "Tidak ada default route, lease gagal"
+fi
+```
+
+![alt text](assets/5-klien-ino.png)
+
+![alt text](assets/5-klien-kusakabe.png)
+
+Dari gambar tersebut terlihat ino dan kusakabe memperoleh alamat pada rentang 10.79.3.10 sampai 10.79.3.89, dengan baris lease time 1800, gateway 10.79.3.1, serta DNS 10.79.1.2 dan 10.79.1.3.
+
+![alt text](assets/5-klien-miwa.png)
+
+Dari gambar tersebut terlihat miwa memperoleh alamat pada rentang 10.79.3.100 sampai 10.79.3.199, dengan baris lease time 43200.
+
+Setelah itu kita bisa melakukan pengecekan dengan command berikut ini di node tengen (Server DHCP).
+
+```sh
+tail -40 /var/lib/dhcp/dhcpd.leases
+```
+
+![alt text](assets/5-dhcpleases.png)
+
+Dari gambar tersebut terlihat lease ino dan kusakabe berselisih 30 menit antara starts dan ends, sedangkan lease miwa berselisih 12 jam. 
+
+**6. Kugisaki ditetapkan sebagai personel VIP yang harus mempertahankan alamat yang sama setiap kali terhubung. Buat DHCP static lease berdasarkan MAC Address client tersebut dengan fixed address [PREFIX IP].3.99. Pastikan alamat ini berada di luar seluruh pool dinamis, validasi konfigurasi server, lalu renew lease pada client. Buktikan bahwa alamat yang diterima sesuai dengan reservasi.**
+
+Pertama-tama mencari MAC address eth0 dari Kugisaki. Berikut command yang dijalankan.
+
+```sh
+ip link show eth0 | grep link/ether
+```
+
+![alt text](assets/6-MAC-kugisaki.png)
+
+MAC Address Kugisaki: 02:42:01:49:4c:00
+
+Kemudian dibuat script `soal-6-konfigurasi-tengen.sh` di tengen. Pertama-tama, MAC dan alamat tetap disimpan dalam variabel di bagian atas script, supaya apabila MAC berubah cukup nilai variabelnya yang diganti.
+
+```sh
+MAC_KUGISAKI="02:42:01:49:4c:00"
+IP_KUGISAKI="10.79.3.99"
+```
+
+Selanjutnya mengisi file /etc/dhcp/conf.d/hosts.conf, pada blok host kugisaki berisi hardware ethernet, yaitu MAC yang dikenali server, dan fixed-address, yaitu alamat yang selalu diberikan kepada MAC tersebut. Dengan begitu kugisaki selalu menerima 10.79.3.99 setiap meminta lease.
+
+```sh
+cat > /etc/dhcp/conf.d/hosts.conf <<CONF
+host kugisaki {
+    hardware ethernet ${MAC_KUGISAKI};
+    fixed-address ${IP_KUGISAKI};
+}
+CONF
+```
+
+Setelah itu file hosts.conf perlu dipanggil dari dhcpd.conf lewat baris include. Perintah grep -q memeriksa apakah baris tersebut sudah ada. Apabila belum ada (||), baris include ditambahkan di akhir dhcpd.conf dengan >>. Pengecekan ini mencegah baris tertulis dua kali bila script dijalankan ulang.
+
+```sh
+grep -q 'conf.d/hosts.conf' /etc/dhcp/dhcpd.conf || \
+echo 'include "/etc/dhcp/conf.d/hosts.conf";' >> /etc/dhcp/dhcpd.conf
+```
+
+Kemudian sintaks konfigurasi diuji dengan dhcpd -t, dan teks Sintaks OK hanya muncul bila pengujian lolos.
+
+```sh
+echo "--- validasi ---"
+dhcpd -t -cf /etc/dhcp/dhcpd.conf && echo "Sintaks OK"
+```
+
+Selanjutnya ditampilkan seluruh range pada net3.conf untuk membuktikan bahwa 10.79.3.99 tidak termasuk pool mana pun. Hasilnya hanya 10.79.3.10 10.79.3.89 dan 10.79.3.100 10.79.3.199, sehingga .99 jatuh di celah di antara keduanya.
+
+```sh
+echo "--- cek di luar pool ---"
+grep -n "range" /etc/dhcp/conf.d/net3.conf
+```
+
+Terakhir, service dijalankan ulang agar membaca reservasi baru. Jeda 2 detik (sleep 2) diberikan supaya service sempat naik sebelum statusnya diperiksa.
+
+```sh
+service isc-dhcp-server restart
+sleep 2
+service isc-dhcp-server status
+```
+
+Berikut script lengkapnya, yang disimpan lalu dijalankan.
+
+```sh
+#!/bin/sh
+MAC_KUGISAKI="02:42:01:49:4c:00"
+IP_KUGISAKI="10.79.3.99"
+
+cat > /etc/dhcp/conf.d/hosts.conf <<CONF
+host kugisaki {
+    hardware ethernet ${MAC_KUGISAKI};
+    fixed-address ${IP_KUGISAKI};
+}
+CONF
+
+grep -q 'conf.d/hosts.conf' /etc/dhcp/dhcpd.conf || \
+echo 'include "/etc/dhcp/conf.d/hosts.conf";' >> /etc/dhcp/dhcpd.conf
+
+echo "--- validasi ---"
+dhcpd -t -cf /etc/dhcp/dhcpd.conf && echo "Sintaks OK"
+
+echo "--- cek di luar pool ---"
+grep -n "range" /etc/dhcp/conf.d/net3.conf
+
+service isc-dhcp-server restart
+sleep 2
+service isc-dhcp-server status
+```
+
+Setelah menjalankan script di atas, selanjutnya dilakukan permintaan lease pada kugisaki. Script berikut dijalankan di kugisaki. Script melepas IP lama, meminta lease baru, lalu mencetak hasilnya. Script dijalankan dua kali untuk menunjukkan bahwa alamat yang diterima selalu sama.
+
+```sh
+#!/bin/sh
+echo "===== $(hostname) ====="
+echo "MAC : $(ip link show eth0 | awk '/link\/ether/ {print $2}')"
+
+ip addr flush dev eth0
+udhcpc -i eth0 -n -q
+
+echo "--- IP eth0 ---"
+ip -4 a show eth0 | grep inet
+echo "--- Route ---"
+ip route
+echo "--- DNS ---"
+cat /etc/resolv.conf
+GW=$(ip route | awk '/^default/ {print $3}')
+if [ -n "$GW" ]; then
+  echo "--- Ping gateway ($GW) ---"
+  ping -c 3 $GW
+else
+  echo "Tidak ada default route, lease gagal"
+fi
+```
+
+![alt text](assets/6-tes-kugisaki.png)
+
+Dari gambar tersebut terlihat pada baris udhcpc tertulis lease of 10.79.3.99 obtained from 10.79.4.10, dan ip -4 a show eth0 menampilkan inet 10.79.3.99/24. Gateway 10.79.3.1 dan DNS 10.79.1.2 serta 10.79.1.3 juga diterima, dan ping ke gateway berhasil.
+
