@@ -1000,11 +1000,20 @@ service named status
 
 Buktikan menggunakan query dig:
 - dig @10.79.1.2 jujutsu.K31.com SOA
+
+![alt text](<assets/11 - 1.png>)
 - dig @10.79.1.2 jujutsu.K31.com NS
+
+![alt text](<assets/11 - 2.png>)
 - dig @10.79.1.3 jujutsu.K31.com SOA
+
+![alt text](<assets/11 - 3.png>)
 - dig @10.79.1.3 jujutsu.K31.com NS
+
+![alt text](<assets/11 - 4.png>)
 - dig @10.79.1.3 jujutsu.K31.com 
 
+![alt text](<assets/11 - 5.png>)
 
 <br> 
 
@@ -1092,8 +1101,14 @@ rndc reload
 Uji dari client menggunakan dig untuk mengecek CNAME, PTR, dan ping ke google.com
 
 - dig @10.79.1.2 www.jujutsu.K31.com CNAME
+
+![alt text](<assets/12 - 1.png>)
 - dig @10.79.1.2 -x 10.79.1.4
+
+![alt text](<assets/12 - 2.png>)
 - dig @10.79.1.2 google.com A
+
+![alt text](<assets/12 - 3.png>)
 
 <br>
 
@@ -1244,19 +1259,865 @@ mariadb -h 10.79.4.9 -u remote_user -p db_shibuya_K31
 SHOW TABLES;
 SELECT * FROM replication_test;
 ```
+**Dokumentasi:**
+
+![alt text](<assets/13 - 1.png>) 
+![alt text](<assets/13 - 2.png>) 
+![alt text](<assets/13 - 3.png>) 
+![alt text](<assets/13 - 4.png>) 
+![alt text](<assets/13 - 5.png>) 
+![alt text](<assets/13 - 6.png>) 
+![alt text](<assets/13 - 7.png>) 
+![alt text](<assets/13 - 8.png>)
 
 **14. Para penyihir lapangan bersiaga di Data Center sebagai pekerja backend untuk memproses aplikasi. Pasang Nginx dan PHP-FPM pada maki dan panda untuk menyajikan web frontend yang menampilkan hostname masing-masing. Pada nanami, todo, dan kirara, siapkan layanan API yang mencatat log request ke database yaga. Konfigurasikan virtual host agar worker merespons domain layanan yang ditentukan. Batasi akses langsung dari klien ke worker, web worker hanya menerima trafik melalui jalur proxy web yang ditentukan, sedangkan worker API hanya menerima trafik melalui geto. Uji bahwa akses langsung dari klien ditolak, sementara akses melalui reverse proxy tetap berhasil.**
 
+Maki dan panda dipasang Nginx dan PHP-FPM untuk menampilkan halaman frontend berisi hostname. Nanami, todo, dan kirara dipasang endpoint `/api.php` yang mencatat setiap request ke tabel `request_logs` di database yaga. Akses ke worker API dibatasi hanya dari geto (`10.79.4.3`), sehingga akses langsung dari klien ditolak sedangkan akses lewat reverse proxy tetap berhasil.
 
+`soal14-nginx-php.sh` (maki dan panda)
+
+```bash
+apt-get update
+apt-get install nginx php-fpm php-mysql -y
+
+systemctl enable --now nginx
+systemctl enable --now php*-fpm
+
+ls /run/php/
+hostname
+
+cat > /var/www/html/index.php << "EOF"
+<?php
+$hostname = gethostname();
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Frontend Worker</title>
+</head>
+<body>
+  <h1>Frontend berhasil diakses!</h1>
+  <p>Hostname: <?= htmlspecialchars($hostname) ?></p>
+</body>
+</html>
+EOF
+
+cat > /etc/nginx/sites-available/frontend << "EOF"
+server {
+    listen 80;
+    server_name frontend.example.test;
+
+    root /var/www/html;
+    index index.php index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+}
+EOF
+
+ln -sf /etc/nginx/sites-available/frontend /etc/nginx/sites-enabled/frontend
+rm -f /etc/nginx/sites-enabled/default
+
+nginx -t && systemctl reload nginx
+```
+
+`soal14-nginx-nanami.sh` (nanami, todo, kirara)
+
+```bash
+echo "=== Install Nginx, PHP-FPM, dan PHP MySQL ==="
+apt-get update
+apt-get install -y nginx php-fpm php-mysql
+
+echo "=== Start services ==="
+service nginx start
+service php8.4-fpm start
+
+echo "=== Configure Nginx ==="
+cat > /etc/nginx/sites-available/default <<'NGINX'
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    root /var/www/html;
+    index index.php index.html index.htm;
+    server_name _;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+}
+NGINX
+
+echo "=== Test and reload Nginx ==="
+nginx -t
+service nginx reload
+
+echo '<?php echo "PHP OK - " . gethostname(); ?>' > /var/www/html/test.php
+
+echo "=== Test PHP ==="
+curl http://127.0.0.1/test.php
+echo
+echo "=== Setup selesai ==="
+```
+
+`soal14-api-primary.sh` (nanami dan todo)
+
+```bash
+apt-get update
+apt-get install -y nginx php-fpm php-mysql mariadb-client curl lynx
+
+PHP_VERSION=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+PHP_FPM_SERVICE="php${PHP_VERSION}-fpm"
+service "$PHP_FPM_SERVICE" start
+
+cat > /var/www/html/api.php <<'PHP'
+<?php
+
+$host = '10.79.4.9';
+$db = 'db_shibuya_K31';
+$user = 'remote_user';
+$pass = 'RemoteLab2026!';
+
+$method = $_SERVER['REQUEST_METHOD'];
+$path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+
+try {
+    $pdo = new PDO(
+        "mysql:host=$host;dbname=$db;charset=utf8mb4",
+        $user,
+        $pass,
+        [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_TIMEOUT => 5
+        ]
+    );
+
+    $stmt = $pdo->prepare(
+        'INSERT INTO request_logs
+        (request_method, request_path, status_code)
+        VALUES (:method, :path, :status)'
+    );
+
+    $stmt->execute([
+        ':method' => $method,
+        ':path' => $path,
+        ':status' => 200
+    ]);
+
+    http_response_code(200);
+    header('Content-Type: application/json; charset=utf-8');
+
+    echo json_encode([
+        'server' => gethostname(),
+        'method' => $method,
+        'path' => $path,
+        'message' => 'API OK'
+    ]);
+
+} catch (PDOException $e) {
+    error_log('API database error: ' . $e->getMessage());
+
+    http_response_code(500);
+    header('Content-Type: application/json; charset=utf-8');
+
+    echo json_encode([
+        'server' => gethostname(),
+        'error' => 'Database connection or logging failed'
+    ]);
+}
+PHP
+
+chown www-data:www-data /var/www/html/api.php
+chmod 644 /var/www/html/api.php
+php -l /var/www/html/api.php
+```
+
+`soal14-api-backup.sh` (kirara): isi `api.php` sama persis dengan script di atas, ditambah konfigurasi Nginx berikut
+
+```bash
+PHP_VERSION=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+PHP_FPM_SERVICE="php${PHP_VERSION}-fpm"
+PHP_FPM_SOCKET="/run/php/php${PHP_VERSION}-fpm.sock"
+
+cat > /etc/nginx/sites-available/default <<NGINX
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    root /var/www/html;
+    index index.php index.html;
+    server_name _;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+
+    location ~ \.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:${PHP_FPM_SOCKET};
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+}
+NGINX
+
+php -l /var/www/html/api.php
+nginx -t
+service nginx start
+service "$PHP_FPM_SERVICE" restart
+service nginx reload
+```
+
+`soal14-reverse-proxy.sh` (geto)
+
+```bash
+cat > /etc/nginx/conf.d/soal14-api.conf <<'NGINX'
+upstream api_workers {
+    server 10.79.4.6:80;
+    server 10.79.4.7:80;
+    server 10.79.4.8:80 backup;
+}
+
+server {
+    listen 8080;
+    server_name _;
+
+    location / {
+        proxy_pass http://api_workers;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+NGINX
+
+nginx -t
+service nginx reload
+```
+
+Pembatasan akses pada worker API (nanami, todo, kirara), ganti `/etc/nginx/sites-available/default`
+
+```nginx
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    root /var/www/html;
+    index index.php index.html index.htm;
+    server_name _;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    location = /api.php {
+        allow 10.79.4.3;
+        deny all;
+
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+    }
+
+    location ~ \.php$ {
+        deny all;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+}
+```
+
+Pembatasan akses pada web worker (maki dan panda), tambahkan pada `location /` dan `location ~ \.php$` di virtual host `frontend`
+
+```nginx
+    allow 10.79.1.4;   # gojo
+    deny all;
+```
+
+**Cara:**
+
+1. Jalankan `soal14-nginx-php.sh` di maki dan panda, lalu cek dengan `curl -i -H "Host: frontend.example.test" http://127.0.0.1/` atau `lynx http://127.0.0.1/`.
+2. Jalankan `soal14-nginx-nanami.sh` di nanami, todo, dan kirara, lalu cek `curl http://127.0.0.1/test.php`.
+3. Di nanami, install klien database (`apt-get install -y mariadb-client`) dan tes koneksi ke yaga dengan `mariadb -h 10.79.4.9 -u remote_user -p db_shibuya_K31` (password `RemoteLab2026!`), lalu `SHOW TABLES;`.
+4. Jalankan `soal14-api-primary.sh` di nanami dan todo, `soal14-api-backup.sh` di kirara, lalu tes `curl -i http://127.0.0.1/api.php` dan cek `request_logs` di yaga.
+5. Di geto, tes `curl -i http://10.79.4.6/api.php`, `.7`, dan `.8`, lalu jalankan `soal14-reverse-proxy.sh` dan tes `curl -i http://127.0.0.1:8080/api.php`.
+6. Pasang pembatasan akses pada worker, jalankan `nginx -t && service nginx reload`, lalu bandingkan `curl -i http://127.0.0.1/api.php` dari klien (ditolak) dengan dari geto (berhasil).
+
+**Dokumentasi:**
+
+![alt text](<assets/14 - 1.png>) 
+![alt text](<assets/14 - 2.png>) 
+![alt text](<assets/14 - 3.png>) 
+![alt text](<assets/14 - 4.png>) 
+![alt text](<assets/14 - 5.png>) 
+![alt text](<assets/14 - 6.png>) 
+![alt text](<assets/14 - 7.png>) 
+![alt text](<assets/14 - 8.png>) 
+![alt text](<assets/14 - 9.png>) 
+![alt text](<assets/14 -10.png>) 
+![alt text](<assets/14 - 11.png>) 
+![alt text](<assets/14 - 12.png>) 
+![alt text](<assets/14 - 13.png>) 
+![alt text](<assets/14 - 14.png>) 
+![alt text](<assets/14 - 15.png>)
+![alt text](<assets/14 -16.png>) 
+![alt text](<assets/14 -17.png>) 
+![alt text](<assets/14 - 18.png>) 
+![alt text](<assets/14 - 19.png>) 
+![alt text](<assets/14 - 20.png>) 
+![alt text](<assets/14 - 21.png>) 
+![alt text](<assets/14 - 22.png>) 
+![alt text](<assets/14 - 23.png>) 
+
+---
 
 **15. Geto bertugas mengendalikan pembagian beban request API di internal Data Center agar server tidak tumbang bersamaan. Konfigurasikan Nginx pada geto sebagai Load Balancer internal dengan upstream api_cluster yang mengarahkan trafik ke nanami dan todo. Terapkan algoritma Weighted Round Robin dengan bobot 3:1, di mana nanami menerima porsi beban tiga kali lebih banyak daripada todo. Buktikan distribusi beban ini dengan melakukan loop request berulang kali ke geto dari jaringan lokal Data Center dan periksa rasio responnya.**
 
-**16. Gojo berdiri di perbatasan DMZ sebagai gerbang publik tunggal bagi seluruh client dari luar maupun dalam. Konfigurasikan Nginx pada gojo untuk melayani domain jujutsu. < xxxx>.com dan www.jujutsu .< xxxx>.com menggunakan metode Path-Based Routing. Atur agar request root (/) diteruskan secara Round Robin ke worker frontend (maki dan panda), sedangkan request ke path /api diteruskan langsung ke geto. Uji dari client Divisi A atau B bahwa akses ke web utama dibalas oleh Maki/Panda, sedangkan akses ke  api diteruskan dan dijawab oleh Nanami/Todo.**
+Nginx pada geto dikonfigurasi dengan upstream `api_cluster` berisi nanami dengan `weight=3` dan todo dengan `weight=1`. Pengujian dilakukan dengan loop 20 request lalu respons direkap per server, dan nanami menerima sekitar tiga kali lebih banyak request daripada todo.
+
+`soal15-load-balancer.sh` (geto)
+
+```bash
+cat > /etc/nginx/conf.d/soal14-api.conf <<'NGINX'
+upstream api_cluster {
+    server 10.79.4.6:80 weight=3;
+    server 10.79.4.7:80 weight=1;
+}
+
+server {
+    listen 8080;
+    server_name _;
+
+    location / {
+        proxy_pass http://api_cluster;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+NGINX
+
+echo "=== Memeriksa konfigurasi Nginx ==="
+nginx -t
+
+echo "=== Reload Nginx ==="
+service nginx reload
+
+echo "=== Menguji 20 request ke API load balancer ==="
+for i in $(seq 1 20); do
+    curl -s --max-time 5 http://127.0.0.1:8080/api.php
+    echo
+done
+
+echo "=== Rekap distribusi respons ==="
+for i in $(seq 1 20); do
+    curl -s --max-time 5 http://127.0.0.1:8080/api.php
+    echo
+done | grep -o '"server":"[^"]*"' | sort | uniq -c
+
+echo "=== Pengujian selesai ==="
+```
+
+**Cara:**
+
+1. Jalankan `soal15-load-balancer.sh` di geto.
+2. Perhatikan output rekap distribusi di akhir script, rasio nanami berbanding todo harus mendekati 3:1.
+
+**Dokumentasi:**
+
+![alt text](assets/15.png)
+
+---
+
+**16. Gojo berdiri di perbatasan DMZ sebagai gerbang publik tunggal bagi seluruh client dari luar maupun dalam. Konfigurasikan Nginx pada gojo untuk melayani domain jujutsu.K31.com dan www.jujutsu.K31.com menggunakan metode Path-Based Routing. Atur agar request root (/) diteruskan secara Round Robin ke worker frontend (maki dan panda), sedangkan request ke path /api diteruskan langsung ke geto. Uji dari client Divisi A atau B bahwa akses ke web utama dibalas oleh Maki/Panda, sedangkan akses ke api diteruskan dan dijawab oleh Nanami/Todo.**
+
+Gojo dikonfigurasi sebagai reverse proxy untuk `jujutsu.K31.com` dan `www.jujutsu.K31.com`. Path `/` diteruskan secara Round Robin ke maki dan panda, sedangkan path `/api` diteruskan ke geto di port 8080. Dari klien, web utama dibalas bergantian oleh maki dan panda, sedangkan `/api` dijawab oleh nanami atau todo.
+
+`soal16-gojo-routing.sh` (gojo)
+
+```bash
+apt update
+DEBIAN_FRONTEND=noninteractive apt install -y nginx curl
+mkdir -p /etc/nginx/conf.d
+
+cat > /etc/nginx/conf.d/soal16-gojo-routing.conf <<'NGINX'
+upstream frontend_cluster {
+    server 10.79.4.4:80;
+    server 10.79.4.5:80;
+}
+
+server {
+    listen 80;
+    server_name jujutsu.K31.com www.jujutsu.K31.com 10.79.1.4;
+
+    location ^~ /api {
+        proxy_pass http://10.79.4.3:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location / {
+        proxy_pass http://frontend_cluster;
+        proxy_set_header Host frontend.example.test;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+NGINX
+
+echo "=== Validasi konfigurasi Nginx ==="
+nginx -t
+
+echo "=== Aktifkan Nginx ==="
+service nginx restart
+
+echo "=== Status Nginx ==="
+service nginx status
+
+echo "=== Konfigurasi Soal 16 berhasil ==="
+```
+
+**Cara:**
+
+1. Jalankan `soal16-gojo-routing.sh` di gojo.
+2. Dari klien Divisi A atau B (contoh kirara dan nanami), tes web utama dengan `for i in $(seq 1 3); do curl -s -H 'Host: jujutsu.K31.com' http://10.79.1.4/; echo; done`.
+3. Tes API dengan `curl -s -H 'Host: jujutsu.K31.com' http://10.79.1.4/api.php`.
+4. Tes dengan domain: `echo "10.79.1.4 jujutsu.K31.com www.jujutsu.K31.com" >> /etc/hosts`, lalu `lynx http://jujutsu.K31.com`.
+
+**Dokumentasi:**
+
+![alt text](<assets/16 - 1.png>) 
+![alt text](<assets/16 - 2.png>) 
+![alt text](<assets/16 - 3.png>) 
+![alt text](<assets/16 - 4.png>) 
+![alt text](<assets/16 - 5.png>) 
+![alt text](<assets/16 - 6.png>)
+
+---
 
 **17. Komando pusat perlu mengetahui IP asli klien yang mengirimkan request tanpa tertukar dengan IP proxy perantara. Konfigurasikan gojo dan geto agar meneruskan informasi alamat klien melalui header X-Real-IP dan X-Forwarded-For. Pastikan geto hanya mempercayai informasi alamat klien yang diterima dari proxy terpercaya, dan skrip API menyimpan alamat klien yang telah diverifikasi ke kolom client_ip pada tabel request_logs di database yaga. Uji dengan mengirimkan request dari klien Network 2 dan Network 3 ke endpoint /api, kemudian periksa database untuk memastikan alamat yang tercatat sesuai dengan IP klien asal, bukan IP gojo atau geto.**
 
-**18. nanami dan todo merupakan worker API utama, sedangkan kirara disiapkan sebagai  worker cadangan. Konfigurasikan upstream api_cluster pada geto agar kirara menjadi server backup, serta terapkan passive health check dengan parameter max_fails=2 dan fail_timeout=5s pada worker API utama. Pastikan kirara menjalankan layanan API yang kompatibel dengan endpoint utama. Simulasikan gangguan dengan menghentikan layanan Nginx atau layanan API pada nanami dan todo. Buktikan dari klien bahwa request ke /api dialihkan ke kirara dan menghasilkan respons API yang valid tanpa error 502 Bad Gateway.**
+Gojo meneruskan alamat klien lewat header `X-Real-IP` dan `X-Forwarded-For`, sedangkan geto hanya mempercayai header tersebut jika datang dari gojo (`10.79.1.4`) menggunakan modul real_ip. Kolom `client_ip` ditambahkan ke tabel `request_logs` dan script API menyimpan alamat klien yang sudah terverifikasi. Hasil di database menunjukkan IP klien asal, bukan IP gojo atau geto.
+
+`soal17-gojo-client-ip.sh` (gojo)
+
+```bash
+CONF="/etc/nginx/conf.d/soal16-gojo-routing.conf"
+
+if [ ! -f "$CONF" ]; then
+    echo "ERROR: $CONF tidak ditemukan."
+    echo "Cek nama file konfigurasi Gojo dengan: ls /etc/nginx/conf.d/"
+    exit 1
+fi
+
+# Pastikan kedua jalur proxy meneruskan header IP client.
+sed -i '/proxy_set_header X-Real-IP/d; /proxy_set_header X-Forwarded-For/d' "$CONF"
+
+sed -i '/proxy_pass http:\/\/10\.79\.4\.3:8080;/a\
+        proxy_set_header X-Real-IP $remote_addr;\
+        proxy_set_header X-Forwarded-For $remote_addr;' "$CONF"
+
+sed -i '/proxy_pass http:\/\/frontend_cluster;/a\
+        proxy_set_header X-Real-IP $remote_addr;\
+        proxy_set_header X-Forwarded-For $remote_addr;' "$CONF"
+
+nginx -t
+service nginx reload
+
+echo "Konfigurasi header IP Gojo selesai."
+```
+
+`soal17-geto-trusted-proxy.sh` (geto)
+
+```bash
+#!/bin/bash
+set -e
+
+apt update
+DEBIAN_FRONTEND=noninteractive apt install -y nginx
+
+CONF="/etc/nginx/conf.d/soal14-api.conf"
+
+if [ ! -f "$CONF" ]; then
+    echo "ERROR: $CONF tidak ditemukan. Cek konfigurasi Soal 15."
+    exit 1
+fi
+
+cp "$CONF" "${CONF}.backup-soal17"
+
+# Tambahkan trusted proxy hanya di dalam server yang listen 8080.
+python3 - <<'PY'
+from pathlib import Path
+
+p = Path("/etc/nginx/conf.d/soal14-api.conf")
+s = p.read_text()
+
+marker = "    listen 8080;"
+if marker not in s:
+    raise SystemExit("ERROR: server listen 8080 tidak ditemukan.")
+
+s = s.replace(
+    marker,
+    marker + """
+    set_real_ip_from 10.79.1.4;
+    real_ip_header X-Real-IP;
+    real_ip_recursive off;
+""",
+    1
+)
+
+# Forward alamat client yang sudah diverifikasi ke API worker.
+s = s.replace(
+    "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
+    "proxy_set_header X-Forwarded-For $remote_addr;"
+)
+
+p.write_text(s)
+PY
+
+nginx -t
+service nginx reload
+
+echo "Konfigurasi Geto selesai."
+```
+
+Database (yaga)
+
+```bash
+mariadb -e "
+ALTER TABLE db_shibuya_K31.request_logs
+ADD COLUMN IF NOT EXISTS client_ip VARCHAR(45);
+"
+```
+
+`soal17-api-client-ip.sh` (nanami, todo, kirara): `api.php` diubah agar mengisi `client_ip` dari header `X-Real-IP`, hanya jika request datang dari geto
+
+```bash
+cat > /var/www/html/api.php <<'PHP'
+<?php
+
+$host = '10.79.4.9';
+$db = 'db_shibuya_K31';
+$user = 'remote_user';
+$pass = 'RemoteLab2026!';
+
+$method = $_SERVER['REQUEST_METHOD'];
+$path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+
+// Percayai X-Real-IP hanya jika request datang dari geto (proxy terpercaya)
+$clientIp = $_SERVER['REMOTE_ADDR'];
+if ($_SERVER['REMOTE_ADDR'] === '10.79.4.3' && !empty($_SERVER['HTTP_X_REAL_IP'])) {
+    $candidate = trim($_SERVER['HTTP_X_REAL_IP']);
+    if (filter_var($candidate, FILTER_VALIDATE_IP)) {
+        $clientIp = $candidate;
+    }
+}
+
+try {
+    $pdo = new PDO(
+        "mysql:host=$host;dbname=$db;charset=utf8mb4",
+        $user,
+        $pass,
+        [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_TIMEOUT => 5
+        ]
+    );
+
+    $stmt = $pdo->prepare(
+        'INSERT INTO request_logs
+        (request_method, request_path, status_code, client_ip)
+        VALUES (:method, :path, :status, :client_ip)'
+    );
+
+    $stmt->execute([
+        ':method' => $method,
+        ':path' => $path,
+        ':status' => 200,
+        ':client_ip' => $clientIp
+    ]);
+
+    http_response_code(200);
+    header('Content-Type: application/json; charset=utf-8');
+
+    echo json_encode([
+        'server' => gethostname(),
+        'method' => $method,
+        'path' => $path,
+        'message' => 'API OK'
+    ]);
+
+} catch (PDOException $e) {
+    error_log('API database error: ' . $e->getMessage());
+
+    http_response_code(500);
+    header('Content-Type: application/json; charset=utf-8');
+
+    echo json_encode([
+        'server' => gethostname(),
+        'error' => 'Database connection or logging failed'
+    ]);
+}
+PHP
+
+chown www-data:www-data /var/www/html/api.php
+chmod 644 /var/www/html/api.php
+php -l /var/www/html/api.php
+service php8.4-fpm restart
+```
+
+**Cara:**
+
+1. Jalankan `soal17-gojo-client-ip.sh` di gojo dan `soal17-geto-trusted-proxy.sh` di geto.
+2. Di yaga, jalankan perintah `ALTER TABLE` untuk menambah kolom `client_ip`.
+3. Jalankan `soal17-api-client-ip.sh` di nanami, todo, dan kirara.
+4. Dari dua klien (okkotsu dan miwa) jalankan `udhcpc -i eth0`, lalu `curl -i http://10.79.1.4/api.php` dan `curl -i -H 'Host: jujutsu.K31.com' http://10.79.1.4/api.php`.
+5. Di yaga, cek hasilnya dengan query berikut.
+
+```sql
+SELECT id, request_path, client_ip, created_at
+FROM request_logs
+ORDER BY id DESC
+LIMIT 10;
+```
+
+**Dokumentasi:**
+
+![alt text](<assets/17 - 1.png>) 
+![alt text](<assets/17 - 2.png>) 
+![alt text](<assets/17 - 3.png>)
+
+---
+
+**18. nanami dan todo merupakan worker API utama, sedangkan kirara disiapkan sebagai worker cadangan. Konfigurasikan upstream api_cluster pada geto agar kirara menjadi server backup, serta terapkan passive health check dengan parameter max_fails=2 dan fail_timeout=5s pada worker API utama. Pastikan kirara menjalankan layanan API yang kompatibel dengan endpoint utama. Simulasikan gangguan dengan menghentikan layanan Nginx atau layanan API pada nanami dan todo. Buktikan dari klien bahwa request ke /api dialihkan ke kirara dan menghasilkan respons API yang valid tanpa error 502 Bad Gateway.**
+
+Upstream `api_cluster` di geto diubah sehingga nanami dan todo memakai `max_fails=2` dan `fail_timeout=5s`, sedangkan kirara ditandai `backup`. Saat nanami dan todo dimatikan, request dari klien otomatis dialihkan ke kirara dan tetap menghasilkan respons API yang valid tanpa error 502.
+
+`soal18-geto-api-failover.sh` (geto)
+
+```bash
+apt-get update
+apt-get install -y nginx
+
+CONF="/etc/nginx/conf.d/soal14-api.conf"
+
+if [ -f "$CONF" ]; then
+    cp "$CONF" "${CONF}.backup-soal18"
+fi
+
+cat > "$CONF" <<'NGINX'
+upstream api_cluster {
+    server 10.79.4.6:80 max_fails=2 fail_timeout=5s;
+    server 10.79.4.7:80 max_fails=2 fail_timeout=5s;
+    server 10.79.4.8:80 backup;
+}
+
+server {
+    listen 8080;
+    server_name _;
+
+    location / {
+        proxy_pass http://api_cluster;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+}
+NGINX
+
+nginx -t
+service nginx reload
+
+echo "Konfigurasi Soal 18 selesai di $(hostname)."
+```
+
+**Cara:**
+
+1. Jalankan `soal18-geto-api-failover.sh` di geto.
+2. Di kirara, cek `ls -l /var/www/html/api.php`, `php -l /var/www/html/api.php`, dan `service nginx status`. Dari geto tes `curl -i http://10.79.4.8/api.php`, dari klien tes `curl -i http://10.79.1.4/api.php`.
+3. Matikan nanami dengan `service nginx stop`, lalu dari klien jalankan loop berikut.
+
+```bash
+for i in 1 2 3 4 5; do
+    curl -sS -i --max-time 10 http://10.79.1.4/api.php
+    echo
+done
+```
+
+4. Matikan todo dengan `service nginx stop`, lalu ulangi loop yang sama dan pastikan semua respons datang dari kirara.
+
+**Dokumentasi:**
+
+![alt text](<assets/18 - 1.png>) 
+![alt text](<assets/18 - 2.png>)
+
+---
 
 **19. gojo bertugas mengoptimalkan layanan web sekaligus membatasi request berlebihan. Konfigurasikan Nginx Proxy Caching untuk halaman web frontend dengan masa berlaku cache 10 menit dan tambahkan header X-Cache-Status. Terapkan rate limiting pada path /api dengan batas 10 request per detik per IP klien. Buktikan bahwa request ke halaman web yang memenuhi syarat cache menghasilkan status MISS pada akses awal dan HIT pada akses berikutnya. Uji rate limiting secara terpisah dengan mengirimkan request beruntun ke /api, kemudian catat status respons yang dihasilkan ketika batas terlampaui.**
 
-**20. Sebelum Curtain di Shibuya resmi dibuka,  Kusakabe memimpin audit untuk menguji kapasitas layanan. Dari terminal kusakabe, jalankan benchmark menggunakan Apache Benchmark dengan parameter -n 600 -c 30 menuju http://jujutsu .< xxxx>.com/. Catat Requests per Second (RPS), latensi, dan jumlah request yang gagal. Lakukan pengujian tambahan pada endpoint /api untuk mengamati efek rate limiting. Bandingkan hasil pengujian baseline dengan hasil ketika rate limiting aktif, serta gunakan access log gojo untuk membedakan kegagalan aplikasi, koneksi, dan request yang ditolak oleh kebijakan rate limit.**
+Gojo dikonfigurasi dengan cache untuk path `/` selama 10 menit dan header `X-Cache-Status`, serta rate limiting 10 request per detik per IP pada path `/api`. Akses pertama ke halaman web berstatus MISS dan akses berikutnya HIT. Pada uji rate limiting, request yang melewati batas ditolak dengan status 429.
+
+`soal19-proxy-caching.sh` (gojo)
+
+```bash
+CONF="/etc/nginx/conf.d/soal16-gojo-routing.conf"
+BACKUP="${CONF}.backup-soal19"
+
+cp "$CONF" "$BACKUP"
+
+mkdir -p /var/cache/nginx/frontend
+
+if ! grep -q 'keys_zone=frontend_cache:' /etc/nginx/conf.d/soal19-cache-limit.conf 2>/dev/null; then
+cat > /etc/nginx/conf.d/soal19-cache-limit.conf <<'NGINX'
+proxy_cache_path /var/cache/nginx/frontend
+    levels=1:2
+    keys_zone=frontend_cache:10m
+    max_size=100m
+    inactive=10m
+    use_temp_path=off;
+
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+NGINX
+fi
+
+cat > "$CONF" <<'NGINX'
+upstream frontend_cluster {
+    server 10.79.4.4:80;
+    server 10.79.4.5:80;
+}
+
+server {
+    listen 80;
+    server_name jujutsu.K31.com www.jujutsu.K31.com 10.79.1.4;
+
+    location ^~ /api {
+        limit_req zone=api_limit;
+        limit_req_status 429;
+
+        proxy_pass http://10.79.4.3:8080;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Host $host;
+    }
+
+    location / {
+        proxy_pass http://frontend_cluster;
+
+        proxy_cache frontend_cache;
+        proxy_cache_valid 200 10m;
+        proxy_cache_key "$scheme$request_method$host$request_uri";
+        proxy_cache_bypass $http_authorization;
+        proxy_no_cache $http_authorization;
+        add_header X-Cache-Status $upstream_cache_status always;
+
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Host frontend.example.test;
+    }
+}
+NGINX
+
+nginx -t
+service nginx restart
+
+echo "Konfigurasi Soal 19 berhasil diterapkan."
+```
+
+**Cara:**
+
+1. Jalankan `soal19-proxy-caching.sh` di gojo.
+2. Dari klien (contoh okkotsu), tes cache dengan menjalankan perintah berikut dua kali, lalu bandingkan header `X-Cache-Status` (pertama MISS, kedua HIT).
+
+```bash
+curl -sS -D - -o /dev/null -H "Host: jujutsu.K31.com" http://10.79.1.4/
+```
+
+3. Tes rate limiting dengan 20 request bersamaan, lalu catat status yang muncul (request berlebih berstatus 429).
+
+```bash
+for i in $(seq 1 20); do
+    curl -sS -o /dev/null --max-time 5 \
+        -w "Request $i: HTTP %{http_code}\n" \
+        -H "Host: jujutsu.K31.com" \
+        http://10.79.1.4/api.php &
+done
+wait
+```
+
+**Dokumentasi:**
+
+![alt text](<assets/19 - 1.png>) 
+![alt text](<assets/19 - 2.png>)
+
+---
+
+**20. Sebelum Curtain di Shibuya resmi dibuka, Kusakabe memimpin audit untuk menguji kapasitas layanan. Dari terminal kusakabe, jalankan benchmark menggunakan Apache Benchmark dengan parameter -n 600 -c 30 menuju http://jujutsu.K31.com/. Catat Requests per Second (RPS), latensi, dan jumlah request yang gagal. Lakukan pengujian tambahan pada endpoint /api untuk mengamati efek rate limiting. Bandingkan hasil pengujian baseline dengan hasil ketika rate limiting aktif, serta gunakan access log gojo untuk membedakan kegagalan aplikasi, koneksi, dan request yang ditolak oleh kebijakan rate limit.**
+
+Benchmark pada halaman frontend menghasilkan 2250,19 RPS dengan latensi rata-rata 13,332 ms dan 0 request gagal. Pada `/api` dengan rate limiting aktif RPS tampak tinggi (4625,95) karena gojo langsung menolak hampir semua request dengan status 429 (598 non-2xx), sedangkan pada baseline RPS 957,85 dengan latensi rata-rata 31,320 ms karena request benar-benar diproses worker. Kegagalan bertipe Length pada baseline hanya akibat panjang JSON yang berbeda antar worker, bukan error koneksi atau aplikasi, dan access log gojo menunjukkan penolakan murni berasal dari status 429.
+
+Tidak ada script khusus, pengujian dilakukan dengan perintah berikut dari kusakabe.
+
+```bash
+# Frontend
+ab -n 600 -c 30 http://10.79.1.4/
+
+# Endpoint API (rate limiting aktif)
+ab -n 600 -c 30 http://10.79.1.4/api.php
+
+# Pembedaan jenis kegagalan di gojo
+tail -n 50 /var/log/nginx/access.log
+grep ' 429 ' /var/log/nginx/access.log | wc -l
+grep -E ' 50[0-9] ' /var/log/nginx/access.log | wc -l
+tail -n 20 /var/log/nginx/error.log
+```
+
+**Cara:**
+
+1. Dari kusakabe, jalankan `ab` ke halaman frontend lalu catat Requests per second, Time per request, dan Failed requests.
+2. Jalankan `ab` ke `/api.php` dengan rate limiting aktif dan catat hasilnya.
+3. Nonaktifkan `limit_req` di gojo (kondisi baseline), reload Nginx, lalu ulangi `ab` ke `/api.php`.
+4. Di gojo, periksa access log dan error log untuk membedakan status 429 (ditolak rate limit), status 5xx (kegagalan aplikasi), dan kegagalan koneksi (Connect, Receive, Exceptions di output `ab`).
+
+Ringkasan hasil:
+
+| Skenario | Requests/sec | Mean time per request | Failed requests |
+|---|---|---|---|
+| Frontend `/` | 2250,19 | 13,332 ms | 0 |
+| `/api.php` rate limiting aktif | 4625,95 | 6,485 ms | 599 (598 non-2xx) |
+| `/api.php` baseline | 957,85 | 31,320 ms | 299 (semua tipe Length) |
+
+**Dokumentasi:**
+
+![alt text](<assets/20 - 1.png>) 
+![alt text](<assets/20 - 2.png>) 
+![alt text](<assets/20 - 3.png>) 
+![alt text](<assets/20 - 4.png>) 
+![alt text](<assets/20 - 5.png>) 
+![alt text](<assets/20 - 6.png>) 
+![alt text](<assets/20 - 7.png>)
