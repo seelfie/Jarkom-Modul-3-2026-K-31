@@ -1170,7 +1170,84 @@ Cek tabel pada database "db_shibuya_K31"
 mariadb -e "SHOW TABLES FROM db_shibuya_K31;"
 ```
 
+Setup user replikasi di server master, aktifkan binary logging dan mengecek database yang di replikasi (yaga)
+
+```sql
+CREATE USER IF NOT EXISTS 'repl'@'10.79.4.2'
+IDENTIFIED BY 'ReplLab2026!';
+GRANT REPLICATION SLAVE ON *.* TO 'repl'@'10.79.4.2’;
+FLUSH PRIVILEGES;
+SHOW MASTER STATUS\G
+
+SHOW DATABASES LIKE 'db_shibuya_K31';
+SHOW TABLES FROM db_shibuya_K31;
+```
+
+Menghubungkan slave ke master dan memulai replikasi database
+(inumaki)
+
+```sql
+STOP SLAVE;
+CHANGE MASTER TO
+    MASTER_HOST='10.79.4.9',
+    MASTER_USER='repl',
+    MASTER_PASSWORD='ReplLab2026!',
+    MASTER_PORT=3306,
+    MASTER_LOG_FILE='mariadb-bin.000001',
+    MASTER_LOG_POS=1511; (tergantung master)
+START SLAVE;
+SHOW SLAVE STATUS\G
+```
+
+Pengujian replikasi secara realtime<br>
+Di yaga:
+
+```sql
+CREATE TABLE IF NOT EXISTS db_shibuya_K31.replication_test (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    pesan VARCHAR(100)
+);
+
+INSERT INTO db_shibuya_K31.replication_test (pesan)
+VALUES ('Tes replikasi realtime');
+```
+Di inumaki:
+
+```sql
+SHOW TABLES FROM db_shibuya_K31;
+
+SELECT * FROM db_shibuya_K31.replication_test;
+```
+
+Memberikan hak akses pada seluruh node di Network 4
+
+```sql
+CREATE USER IF NOT EXISTS 'remote_user'@'10.79.4.%'
+IDENTIFIED BY 'RemoteLab2026!';
+
+ALTER USER 'remote_user'@'10.79.4.%'
+IDENTIFIED BY 'RemoteLab2026!';
+
+GRANT ALL PRIVILEGES ON db_shibuya_K31.*
+TO 'remote_user'@'10.79.4.%';
+
+SHOW GRANTS FOR 'remote_user'@'10.79.4.%';
+```
+
+Cek pada inumaki
+
+```sql
+mariadb -h 10.79.4.9 -u remote_user -p db_shibuya_K31
+
+// Masukkan password RemoteLab2026!. Kalau udah masuk verifikasi akses:
+
+SHOW TABLES;
+SELECT * FROM replication_test;
+```
+
 **14. Para penyihir lapangan bersiaga di Data Center sebagai pekerja backend untuk memproses aplikasi. Pasang Nginx dan PHP-FPM pada maki dan panda untuk menyajikan web frontend yang menampilkan hostname masing-masing. Pada nanami, todo, dan kirara, siapkan layanan API yang mencatat log request ke database yaga. Konfigurasikan virtual host agar worker merespons domain layanan yang ditentukan. Batasi akses langsung dari klien ke worker, web worker hanya menerima trafik melalui jalur proxy web yang ditentukan, sedangkan worker API hanya menerima trafik melalui geto. Uji bahwa akses langsung dari klien ditolak, sementara akses melalui reverse proxy tetap berhasil.**
+
+
 
 **15. Geto bertugas mengendalikan pembagian beban request API di internal Data Center agar server tidak tumbang bersamaan. Konfigurasikan Nginx pada geto sebagai Load Balancer internal dengan upstream api_cluster yang mengarahkan trafik ke nanami dan todo. Terapkan algoritma Weighted Round Robin dengan bobot 3:1, di mana nanami menerima porsi beban tiga kali lebih banyak daripada todo. Buktikan distribusi beban ini dengan melakukan loop request berulang kali ke geto dari jaringan lokal Data Center dan periksa rasio responnya.**
 
